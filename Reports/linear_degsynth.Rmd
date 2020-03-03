@@ -1,0 +1,286 @@
+---
+title: "linear deg/synth"
+output: html_notebook
+---
+
+
+```{r test terms}
+If we start parametrizing with dlP(t) + Kd, then we have gotten a 
+logMinusExp<-function(ln_a,ln_b){
+   log(exp(ln_a - ln_b) - 1) + ln_b
+}
+
+since f` = f (ln f)` and f` = f`/f, and f` is an instantaneous fold changedFiles()
+suppose the slope of ln2(f`) is one, then it it's doublng at a certain rate. Then 
+
+so given that we have dlP(t)+Kd how to get P(t)?
+so dlP(t)+Kd=l_synth_FC
+dlP(t) = l_synth_FC - Kd
+but since f`/f =  (log(f))`,and dlP(t) = log(P(t))`
+P`(t)/P(t) = l_synth_FC - Kd
+P`(t) =P(t)(l_synth_FC - Kd)
+
+P`(t) = P(t) (l_synth_FC - Kd)
+
+P(t) = exp(l_synth_FC - Kd )  + const
+
+log(P(t)) = log ( exp (l_synth_FC - Kd) + const)
+
+
+
+#Now not wholy clear how logs and spline approximations work.
+#Can we validly approximate dlP(t) and P(t) on the same basis?
+#I THINK so?
+
+P` = R Ks - P Kd
+=> P (log(P))` = RKs - P Kd
+=> log(P)` = RKs/P - Kd
+log(P)`
+so Kd is a log fold change
+
+
+cM = c(10,20); Kd = 20;
+cM - Kd
+log(cM)
+log(Kd)
+exp(logMinusExp(log(cM),log(Kd)))
+
+#for ref
+log(P(t)) = log ( exp (l_synth_FC - Kd) + const)
+
+log(R(t)) = log(P(t)) + log(dlP(t) + Kd) - log(Ks)
+log(R(t)) = log(P(t)) + log(l_synth_FC(t)) - log(Ks)
+
+#If we multiply my bs by the instantenous rates of change at the tps (the left vector)
+#appending a start point, we get sensible vals on the right
+m = matrix(c(10,20,20,-10,-10,-10),ncol=1)
+#(mybs %*% m)%>%dput
+Pt = structure(c(10, 30, 35, 25, 15), .Dim = c(5L, 1L))
+fcs <- m[-1]/Pt
+#Now we generate some param values that work
+Kd = 0.70
+lsynths = fcs + Kd
+prot0=m[1]
+
+#so given that I had Kd an dlsynth I couul dget the fold change at each point...
+newfcs <- lsynths - Kd
+
+#now do a little math
+#so the quantities we can calculuate
+
+newfcs = m[-1] Pt
+
+newfcs = m[-1]/(mybs %*% m )
+
+newfcs = m[-1] / (prot0 + (mybs[-1] %*% m[-1]))
+
+(prot0 + (mybs[-1] %*% m[-1])) * newfcs = m[-1]
+
+prot0 * newfcs + newfcs * (mybs[-1] %*% m[-1]))  = m[-1]
+
+prot0 * newfcs + newfcs * (mybs[-1] %*% m[-1])  = m[-1]
+
+prot0 * newfcs + newfcs * (mybs[-1] %*% m[-1])  = m[-1]
+
+prot0 * newfcs  = m[-1] - newfcs * (mybs[-1] %*% m[-1]) 
+
+prot0 * newfcs = (I - diag(newfcs) mybss) %*% m[-1] 
+
+prot0 * newfcs = (I - diag(newfcs) mybss) %*% m[-1] 
+
+prot0 * newfcs = (I - diag(newfcs) mybss) %*% m[-1] 
+
+ (I - diag(newfcs) mybss)^-1 %*%  prot0 * newfcs = m[-1] 
+
+newfcs = lsynths - Kd
+
+solve(diag(rep(1,5)) - diag(newfcs[,1]) %*% mybs[,-1]) %*%  prot0 * newfcs
+
+
+#########################
+#####WE DID IT TEAM
+#########################
+
+##!!!!
+mym = solve(diag(rep(1,5)) - diag(newfcs[,1]) %*% mybs[,-1]) %*%  (prot0 * newfcs)
+stopifnot(mybs %*% c(prot0,mym) == Pt
+correctinv = solve(diag(rep(1,5)) - diag(newfcs[,1]) %*% mybs[,-1])
+#!!!!
+#
+```
+
+so the above is an acceptable solution.It might have a more effient solution though. 
+
+
+```{r test terms}
+#THIS WORKS!
+OKay so... 
+####Lets try to solve more efficiently
+I = diag(rep(1,5))
+A = I
+BS = mybs[,1]
+B = -D %*% mybs[,-1]
+solve(A+B) %*% (prot0 * newfcs)
+stopifnot(correctinv == solve(A+B))
+inv=solve
+
+
+#The woodbury matrix identity is https://en.wikipedia.org/wiki/Woodbury_matrix_identity
+#it says that
+inv(A + UCV) = inv(A) - inv(A) U inv(inv(C) + V inv(A) U) V inv(A)
+#so what if I is A, I is also V, mybs is C , and D is U
+then....
+woodburymatrixsolve<-function(invA,U,invC,invV){
+  inv(A) - inv(A) %*% U %*% inv(invC + V inv(A) U) V inv(A)
+}
+#suppose I do... D= U 
+
+#NOPE
+
+correctinv
+
+inv(I - D %*%B) 
+
+#from here?
+#https://math.stackexchange.com/questions/17776/inverse-of-the-sum-of-matrices
+I = diag(rep(1,5))
+A = I
+BS = mybs[,1]
+B = -D %*% mybs[,-1]
+solve(A+B) %*% (prot0 * newfcs)
+correctinv = solve(A+B)
+#uif B is rank 1
+inv(A+B) = Inv(A) - 1/(1+trace(B%*%inv(A)))
+#They then extend this to higher ranks.
+#So what do I do?
+#
+
+
+#simpler matrix identities
+#Now SOlve(AB) is solve(B)solve(A)
+let diag(newfcs) = D, and mybs[,-1] = B
+I want inv(I - D * B)
+inv(I - D * B)
+inv( D * (inv(D) *I - B ) )
+inv( D * (inv(D) - B ) )
+inv(inv(D) - B)*inv(D)
+
+C_5^-1 = Cinv(4) - g(4)Cinv(4)B(4)C(inv4)
+
+
+g(n) = 1/ (1+trace(Cinv(n)))
+Cinv(1) = inv(A) 
+Cinv(2) = Cinv(1) - g(1) Cinv(1) B(1) Cinv(1)
+Cinv(2) = inv(A) - g(1) inv(A) B(1) inv(A)
+#up to three
+Cinv(3) = Cinv(2) - g(2) Cinv(2) B(1) Cinv(2)
+Cinv(3) =inv(A) - g(1) inv(A) B(1) inv(A) - g(2) inv(A) - g(1) inv(A) B(1) inv(A)  B(2)  inv(A) - g(1) inv(A) B(1) inv(A)
+#So this looks impractically complicated unless A or B is the identity matrix
+Cinv(3) =inv(A) - g(1) inv(A) B(1) inv(A) - g(2) inv(A) - g(1) inv(A) B(1) inv(A)  B(2)  inv(A) - g(1) inv(A) B(1) inv(A)
+
+Cinv(5) = Cinv(4) - g(4)Cinv(4)B(4)C(inv4)
+
+
+
+#Could I now use woodbury on THAT???
+#it says that
+inv(A + UCV) = inv(A) - inv(A) U inv(inv(C) + V inv(A) U) V inv(A)
+S
+
+'"
+##This is all defunct i think...
+P(t) = mybs %*% m
+and 
+P'(t) = mydbs %*% m
+#given my simple stepwise dbs we also have
+P'(t) = m ; P(t) = mybs %*% m
+
+
+#how do logs and splines even work?
+if x ~= S %*% m #S = mydbs, Si = mybs
+#dimensions in square brackets
+#I think this doesn't generally even work...
+#we can treat our t row vectors as happening in parallel
+#But if we consider 1, then it's going to be S[1,1]m[1]+S[1,2]m[2]...etc
+#That doesn't simplify, since log(a+b) generally doesn't
+log(x[t]) ~= log(S[t,d] %*% m[d,1])
+#But if S[t,d]=0 for all d!=t,
+#then 
+log(x[t]) = log(S[t,t])*m[t])
+log(x[t]) = log(S[t,t])+log(m[t])
+log(x[t]) = log(diag(S))+log(m[t])
+log(x[t]) = 0+log(m[t])
+#and note that this just reduces to log(x)=log(x) where S is identity and so x = m
+#But can we use this to go from the log fold change params to the log amount?
+let x = p'(t)
+S %*% m  = p'(t)
+log(S %*% m) = log(p'(t))
+log(m) = log(p'(t))
+#Is the log of the  differential equal to something?
+log(m) = log(log'(P(t)) * P(t)) #Is this wrong maybe?
+log(m) = log(log'(P(t))) + log(P(t))
+log(m) - log(P(t)) = log(log'(P(t))) 
+#??? How did I get here when the righ tside can be negative??????
+exp(log(m) - log(P(t))) = log'(p(t))
+
+exp(log(m) - log(Si%*%m) ) = log'(Si%*%m)
+
+#not sure if this is going anywhere.
+so agian x= p'(t)
+#what we have from our parameters is log'(P(t))
+#The problem is we need ot go from these to P(t) assuming INTERPOLATION in LINEAR SPADCE
+#nope hang on, the right side of this can be negative, so how come
+exp(log(m) - log(Si%*%m) ) = log'(Si%*%m)
+exp(log(m) - log(Si%*%m) ) = 
+
+
+##Should we abandon and just go linear?
+Then we can posit linear fold change componenets
+so that P'(t) = Ks R(t) + Kd P(t)
+S m = P'(t)
+Si m = P(t)
+S m = Ks R(t) + Kd Si m
+Ks R(t) = Sm - Kd Si m
+R(t) = (Sm - Kd Si m) / Ks
+log(R(t)) = log( S m - Kd Si m ) - log(Ks)
+and
+log(P(t)) = log( Si m)
+#but now we still need to avoid taking the log of a negative number....
+#Which we were partially doing before by using log splines....
+#So S m must be greater than or equal to Kd Si m
+meaning ... m > Kd Si m
+
+
+
+#####BUT - all the above is very hard to vectorize in stan.
+#What if we instead know prot0/m, the protein course, and Kd, the degredation rate?
+#The problem here is that some values are impossible, log'(P(t)) must be above the fold change
+m[-1] / (mybs %*% m ) - Kd > 0
+
+
+###Okayyyy
+or in other words
+#So, my terminology was confusing me. m 
+LFC = synth - Kd
+Ks = 1
+prot = mybs %*%c(prot0,LFC)
+mRNA = prot + log(mydbs %*% (LFC+Kd) ) - log(Ks)
+#
+m
+
+prot0=12
+synth=c(2,2,1,4,5)*10
+Kd = 10
+prot = mybs%*%c(prot0,synth - Kd)
+mRNA = prot + log(mydbs %*% synth)
+add=`+`
+ggpubr::ggarrange(plotlist=list(qplot(1:5,c(prot)),qplot(1:5,c(mRNA))))
+
+```
+
+
+```{stan modeltest,output.var =st_modeltest}
+
+
+```
+

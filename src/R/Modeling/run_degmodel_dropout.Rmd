@@ -1,0 +1,1051 @@
+---
+title: "Fitting Protein Synthesis Trajectories in Stan"
+output: 
+  html_notebook:
+    toc: true
+
+---
+
+<!-- This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code.  -->
+<!-- Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*.  -->
+
+This notebook shows the currnet state of the analysis of protein synthesis trajectories in mouse neocortex, using data from
+Ribo-seq and Mass Spectrometry.
+
+## Setup
+```{r}
+knitr::opts_chunk$set(echo=T,include=T,eval=T,cache=F,root.dir='/fast/groups/ag_ohler/work/dharnet_m/cortexomics_modeling/',dev='svg')
+```
+
+```{r,eval=T,echo=T,include=T,cache=F}
+#' First we'll load the necessary librarys, including proDD which is only available on github.
+library(rmarkdown)
+library(knitr)
+library(here)
+#for convenience on my sistem
+# try(silent = T,{setwd('/fast/groups/ag_ohler/work/dharnet_m/cortexomics_modeling/')})
+#for excecuting in the terminal
+try(silent = T,{library(colorout)})
+library(checkmate)
+library(here)
+library(assertthat)
+library(stringr)
+library(tidyverse)
+library(abind)
+library(ggpubr)
+library(data.table)
+library(zeallot)
+library(splines)
+library(parallel)
+library(broom)
+# #
+library(rstan)
+library(txtplot)
+
+#Load proDD from the github
+tryCatch(library(proDD),error=function(e){
+  options(repos = getOption("repos")["CRAN"])
+  BiocManager::install(c('MSnbase'))
+  #This package uses a similiar stan model to mine
+  #I'm using their EM function to get some global hyperparameters (e.g. global mean, variance, dropout frequency of MS in each library)
+  devtools::install_github("const-ae/proDD")
+})
+
+source(here('src/R/Functions/rstan_functions.R'))
+suppressMessages({library(bayesplot)})
+
+```
+
+## Load, the data
+
+We'll use a table of metainfo to select the protein IDs for which the data looks okay - i.e. the link between ribo and mass spec looks good, the mass spec actually changes over time (as per a simple linear model) and the number of missing stages in the mass spec isn't greater than 2.
+```{r,fetchdata,eval=T}
+#load the metadata on all our genes and the many IDs involved
+metainfo<-suppressMessages({read_tsv(here('data/metainfo.tsv'))})
+#Pull out the gene names we want to analyze
+uids4stan <- metainfo%>%
+  filter(isbest)%>%#these are thee final pairs of gene/cds/mass spec ids that we use for modeling MS
+  filter(sig_MS_change)%>%
+  filter(n_stagemissing<=2)%>%#now filter them further - those with too many missing values will crash Rstan
+  .$uprotein_id
+
+#Make sure these interesting genes come first
+testgenes <- metainfo%>%filter(gene_name%in%c('Flna','Satb2'))%>%filter(isbest)%>%.$uprotein_id%>%unique
+uids4stan <- union(testgenes,uids4stan)
+
+#
+best_uprotein_ids <- uids4stan
+
+
+#This code is here for convencience, shows how the objects were created
+
+# c(matched_ms_mat,mscountvoom$E) %<-% with(new.env(),
+# load('data/integrate_exprdata2.Rdata')
+# list(matched_ms_mat,mscountvoom$E)	
+# })
+# ribomat <- mscountvoom$E%>%.[,str_subset(colnames(.),'ribo')]
+# ribomat %>% saveRDS('data/ribomat.rds')
+# matchedms_mat %>% saveRDS('data/matchedms_mat.rds')
+# ribo_sigma <- countvoom$weights%>%{1/.}%>%
+#   set_rownames(rownames(countvoom$E))%>%
+#   set_colnames(colnames(countvoom$E))%>%
+#   .[best_protein_ids,str_subset(colnames(.),'ribo'),drop=F]%>%
+#   set_rownames(best_uprotein_ids)
+# ribo_sigma %>% saveRDS('data/ribo_sigma.rds')
+# matchedms_mat %>%saveRDS('data/matched_ms_mat.rds')
+# ribomat %>%saveRDS('data/ribomat.rds')
+# matchedms_mat%>%colMedians(na.rm=T)%>%txtplot
+
+#this is the ms data
+matchedms_mat <- (readRDS)(here('data/matched_ms_mat.rds'))
+#this is the count data
+ribomat <- (readRDS)(here('data/ribomat.rds'))
+#this contains the variance of the log count data
+ribo_sigma <- (readRDS)(here('data/ribo_sigma.rds'))
+
+    
+```
+
+## Rescale and organize the data, fit hyperparams
+
+We want our data to center around zero to avoid numeric issues, and to be ordered according to our chosen ids.
+
+We also want to use [proDD](https://github.com/const-ae/proDD/blob/master/src/stan_files/batch_skewed_posterior.stan) to fit some hyperparameters such as the dropout rate in the libraries, the mean and variance of protein levels etc etc.
+
+
+```{r ,echo=TRUE,eval=T}
+if(!file.exists(here('data/proddparams.Rdata'))){
+  library(proDD)
+  #get matrices of riboseq and ms data, median norm them, then subtract again so the values center on zero
+  #(the former is necessary, the second is simply for numeric reasons - stan will freak out if values are high)
+    #ids of the ms data for these
+  best_ms_ids <- metainfo%>%{.$ms_id[match(best_uprotein_ids,.$uprotein_id)]}
+  #and of the ribo data
+  best_protein_ids <- metainfo%>%{.$protein_id[match(best_uprotein_ids,.$uprotein_id)]}
+
+  matchedms_mat_rscl <- matchedms_mat[best_ms_ids,]
+  matchedms_mat_rscl <- matchedms_mat_rscl%>%{proDD::median_normalization(.)}
+  msmed <- matchedms_mat_rscl%>%apply(2,median,na.rm=T)%>%median(.,na.rm=T)
+  matchedms_mat_rscl %<>% subtract(msmed)
+  matchedms_mat_rscl%<>% set_rownames(best_uprotein_ids)
+  
+  best_protein_ids<-best_uprotein_ids%>%str_extract('[^_]+')
+  ribomed <- ribomat[]%>%median(.,na.rm=T)
+  ribomatrscl <- ribomat[best_uprotein_ids,]%>%
+    set_rownames(best_uprotein_ids)
+  ribomatrscl <- ribomatrscl%>%{proDD::median_normalization(.)}
+  ribomed <- ribomatrscl%>%apply(2,median,na.rm=T)%>%median(.,na.rm=T)
+  ribomatrscl %<>% subtract(ribomed)
+  
+  tpvect<-matchedms_mat_rscl%>%colnames%>%str_extract('[^_]+')
+
+  #Now fit our hyperparameters
+  proddparam <- proDD::fit_parameters(matchedms_mat_rscl,tpvect)
+  save(matchedms_mat_rscl,ribomatrscl,ribomed,msmed,proddparam,
+       tpvect,ribo_sigma,file='data/proddparams.Rdata')
+}else{
+  library(zeallot)
+  # c(matchedms_mat_rscl,ribomatrscl,ribomed,msmed,proddparam,tpvect) %<-% get()
+  # file.remove(file='data/proddparams.Rdata')
+  load(here('data/proddparams.Rdata'))
+}
+matchedms_mat_rscl<-matchedms_mat_rscl[uids4stan,]
+ribomatrscl<-ribomatrscl[uids4stan,]
+ribo_sigma<-ribo_sigma[uids4stan,]
+```
+
+Here's what the data actually look like:
+
+```{r, message=TRUE,echo=FALSE}
+
+matchedms_mat_rscl%>%head(3)
+
+ribomatrscl%>%head(3)
+
+ribo_sigma%>%head(3)
+
+proddparam
+```
+
+## Allowing stan to access the data
+
+Since our stan model requires the data in a very particular format, we'll write a function that takes in a set of ids
+and outputs the data stan needs to run the model on them. This function can also provide the hyperparameters from
+the proddparam object fitted above, the constants describing the data dimensions, the spline matrices needed
+to deal with the differential equation governing synthesis and decay, etc etc.
+
+```{r}
+#function that pulls out the stan data we need in the right shape, and pairs it with proDD parameters etc. 
+get_dp_standata <- function(sel_uprotein_id,
+                            matchedms_mat_rscl,ribomat,ribomatrscl,
+                            params=proddparam
+){
+  stopifnot(all(sel_uprotein_id%in%rownames(matchedms_mat_rscl)))
+  # msids <- ms_id2protein_id%>%filter(uprotein_id %in% sel_uprotein_id)%>%.$ms_id
+  msdata <- matchedms_mat_rscl[sel_uprotein_id,,drop=F]
+  # msdata <- sizefactnorm(msdata)
+  # MSmed = 0
+  # MSmed = median(msdata,na.rm=T)
+  # msdata = msdata - MSmed
+  msdata %<>% replace_na(-Inf)
+  n_missing_ms <- sum(!is.finite(msdata))
+  #
+  tpvect <- colnames(msdata)%>%str_extract('[^_]+')%>%as.factor%>%as.numeric
+  #clear unecessary columns from this object
+  ribocols <- colnames(ribomatrscl)%>%str_subset('ribo')
+  ribomatrscl <- ribomatrscl[,ribocols]#the ribomat had extra columns for other data that needed to be gotten rid of
+  ribotpvect <- colnames(ribomatrscl)%>%str_extract('[^_]+')%>%as.factor%>%as.numeric
+  ribomat <- ribomatrscl[sel_uprotein_id,ribocols,drop=F]
+  ribomed = 0
+  stopifnot(ncol(ribomat)==length(ribotpvect))
+  # ribomed = median(ribomat,na.rm=T)
+  # ribomat <- ribomat - ribomed
+  #
+  prodd_params <- params
+  #
+  require(splines2)
+  time=1:n_distinct(tpvect)
+  timeknots <- time[c(-1,-length(time))]
+  mybs <- cbind(1,ibs(time, knots = timeknots,degree = 1, intercept = TRUE))
+  mydbs = bs(time, knots = timeknots,degree = 1, intercept = TRUE)
+  
+  
+  #
+  standata = list(
+    nsamples=ncol(msdata),#number of samples
+    nribosamples=ncol(ribomat),#number of samples
+    G=nrow(msdata),#number of proteins
+    T=n_distinct(tpvect),#info on the number of conditions
+    totalmissing=n_missing_ms,#info on th total amount of missing data
+    lMS=msdata,#data
+    lribo=ribomat,#data
+    experimental_design=tpvect, #indicator variable matching the samples to conditions
+    experimental_design_r=ribotpvect,
+    zeta=prodd_params$hyper_params$zeta,#the spread of the dropout point for a library, gets combined with the varianc per protein
+    rho=prodd_params$hyper_params$rho,#rho the location of the dropout point for a given library
+    mu0=prodd_params$hyper_params$mu0,#fit by proDD the mean of means
+    sigma20=prodd_params$hyper_params$sigma20,#fit by proDD - the variance in means
+    eta=prodd_params$hyper_params$eta,#fit by proDD - th evariance in protein variances
+    nu=prodd_params$hyper_params$nu,#fit by proDD - the mean of protein variances
+    ribo_sigma=ribo_sigma[sel_uprotein_id,ribocols,drop=F],
+    mybs = mybs,
+    mydbs = mydbs
+  )
+  standata
+  invisible(standata)
+}
+get_dp_standata <- partial(get_dp_standata,
+                           matchedms_mat_rscl=matchedms_mat_rscl,ribomat=ribomat,ribomatrscl=ribomatrscl,
+                           params=proddparam)
+set.seed(0)
+# uids4stan%<>%sample(100)
+
+#make sure we can pull all the data
+allstandata <- get_dp_standata(uids4stan)
+
+```
+
+
+## Plotting the data
+ 
+ And now we can plot our data:
+ 
+ 
+```{r plotdata2,plot.dev='svg'}
+meltmatrixdata <-function(x){x%>% {reshape2::melt(.)}%>%set_colnames(c('gene','dataset','signal'))%>%separate(dataset,c('time','assay','rep'))
+}
+id2name <- metainfo%>%distinct(uprotein_id,gene_name)%>%{setNames(.$gene_name,.$uprotein_id)}
+msdata <- get_dp_standata(uids4stan[1:2])$lMS%>%meltmatrixdata
+ribodata <- get_dp_standata(uids4stan[1:2])$lribo%>%meltmatrixdata
+plotdata <- bind_rows(ribodata,msdata)
+plotdata$gene <- id2name[as.character(plotdata$gene)]
+qplot(data=plotdata,y=signal,x=time,geom='point',size=I(.5))+facet_grid(gene~assay)+theme_bw()
+
+```
+
+
+
+
+
+Note that these two genes, (called 'Satb2' and 'Flna') are of particular biological interest - they are known players in the biology of cortical development. The first has an increasing expression pattern that hopefully should pin down the degredation rate and the half life to some degree. The second shows interesting nonlinear behavior - the protein goes down more slowly than the Ribo-seq, indicating that degredation between timepoints is incomplete, and our nonlinear model should fit better.
+
+
+# Model 1
+
+```{r loadmodel1}
+#set up stan
+options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+
+#load the simplest model for single genes, but with dropout (our main model)
+dp_stanfile = here('src/Stan/mod_proDD.stan')%T>%{stopifnot(file.exists(.))}
+dp_model = rstan::stan_model(dp_stanfile)
+
+```
+
+The first model - dp_model, is what we discussed in our meeting, plus accounting for dropout. I got the dropout code  from [here](https://github.com/const-ae/proDD/blob/master/src/stan_files/batch_skewed_posterior.stan).
+
+Below you can see the mode code with commented parameters
+
+
+```{r printmodel, echo=TRUE, message=TRUE}
+dp_model
+```
+
+### Technical parameters
+
+So looking first at the bottom of the `model`....
+
+```
+
+  {
+    int counter = 1;
+    for(i in 1:G){
+      for(jr in 1:nribosamples){
+        lribo[i,jr] ~ normal(mRNA[i,experimental_design_r[jr]], ribo_sigma[i,jr]); // use confidence intervals to weight the observations
+      }
+      for(j in 1:nsamples){
+        if(is_inf(lMS[i, j])){
+          target += normal_lccdf(prot[i, experimental_design[j]] | rho[j], fabs(zetastar[counter]));
+          counter += 1;
+        }else{
+          lMS[i, j] ~ normal(prot[i, experimental_design[j]], sqrt(sigma2[i]));
+        }
+      }
+    }
+  }
+```
+
+So for each gene, i in G, we are first predicting the (log2 of) Riboseq (ribo), which is normally distributed according with mean `mRNA` for each timepoint, the timepoint for each column being indexed by `experimental_design_r`, and having standard deviation `ribo_sigma` (note that this is experiment, not timepoint, specific).
+
+Meanwhile the protein is either a dropout or not. If it's a dropout (a value signified by -Inf) then, as with proDD, we fit the dropout likelihood using a sigmoid function, in this case normal_lccdf. If it's not a dropout then it's normally distributed. The mean expression `prot` is again indexed by a variable `experimental_design` for each timepoint. The variance of this normal distribution, which is gene specific, is denoted by `sigma2`.
+
+Note that we can simply choose a gene without any dropouts and that part of the model won't run.
+
+### Kinetic Parameters
+
+
+#### Theory
+
+
+Ignoring the priors above this loop for a moment, The relationship between `prot` and `mRNA` is where the interesting part of the model is, and this relationship is descrbied in the  `transformed parameters` block. The key is is the basic relationship (which I have awkwardly rendered in R code rather than latex):
+
+```
+'
+#Basic mass action - P is synthesized at rate Ks from R and degraded at rate Kd
+#P(t) and R(t) are functional forms (splines) for R and P
+#dP is the P`, the differential over time
+dP(t) = Ks*R(t) - Kd (P(t))
+#re arrange this to isolate R
+R(t) = dP(t) + Kd (P(t)) / Ks
+#take the log
+log(R(t)) = log(dP(t)+Kd*P(t)) - log(Ks)
+#exploit the fact that P*log(P(t))`= P`(t)
+log(R(t)) = log(P(t) * dlogP(t) +Kd*P(t)) - log(Ks)
+#to get our log linear relationsihip
+log(R(t)) = log(P(t)) + log(dlP(t) + Kd) - log(Ks)
+
+```
+Working with the above is easy if we parametrise log(P) as changing linearly, then we can get:
+
+This is kind of non ideal - we are assuming exponentail change between timepoints when linear is probably the simplest sassumption - but for now it'll do! (The solution with linear space changes exists but I'm not quite happy with it yet)
+
+Note that if Kd (the degredation rate) is high then dlP, the diffential of log P, doesn't influece the above much and we find that the Riboseq is basical linear to the protein. If on the other P is low and Kd is also low, then log(R) is linear to the _change_ in P. As expected. In practice the real situation is going to be somewhere in between these. 
+
+Note also that for high Kd and low dlP, Kd and Ks are not identifiable - an increase in Kd can be exactly cancelled by an increase in Ks. This is also as expected. Often, for this reason, these kinds of trajectories are parametrized not with Kd and Ks but with the half life (`log(2)/Kd`) and the steady state level  - Ks/Kd. The latter is always identified, the former may not be, depending on the trajectory of R (which must deviate from an exponential decay curve) and the half life (which must be longer than the distance between time points).
+
+
+#### Practice
+
+We also need our model to be aware that the degredation can only be negative, and the synthesis can only be positive (i.e. `Kd` and `Ks` are both non negative). Since we want to go from a P trajectory to an R trajectory (differentiating is easier than integrating) we are then restricted in the possible combinations of parameters that make sense (note that in the above, dlP(t) + Kd(t) needs to be positive or we're taking the log of a negative number). We can fix this by parametrizing dlP(t) + Kd directly. I call this  value `synth`, as it is the the fold change due to synthesis, and necessariliy positive. The actual fold change in the protein is then `synth - Kd = fcs`. The fold change `fcs` and `synth` are time dependent and can be can be expressed as a spline, so from the above:
+
+```
+#let dB be the I spline basis of degree 1 (the identity matrix) and B be the corresponding I spline basis (it's integral)
+#for simplicity we can assume that there's an extra column of 0s in dB and 1s in B, and append log(prot0) to our fcs.
+#Then
+dB %*% fcs = log'(P(t))
+#and
+B %*% fcs = log(P(t))
+fcs  = synth - Kd (so m > Kd)
+P'(t) = Ks (R(t)) - Kd P(t)
+#Use logarithm derivative identity, substitute in our matrix
+=) P'(t) = log'(P(t))*P(t) = log'(P(t))*exp(log(P(t))) = (dB %*% fcs ) exp (B%*%fcs)
+#now put in our spline forms 
+=) (dB %*% fcs ) exp (B%*%fcs)  = Ks (R(t)) - Kd exp (B%*%fcs)
+Ks (R(t)) =  (dB %*% m ) exp (B%*%m) +  Kd exp (B%*%m)
+log(R(t)) = log( (dB %*% fcs ) exp (B%*%fcs) +  Kd exp (B%*%fcs)) - log(Ks)#tak the log, move Ks over
+log(R(t)) = log( (dB %*% fcs ) +  Kd) + log(exp (B%*%fcs)) - log(Ks)#factorise and seperate form the log term
+log(R(t)) = log(exp (B%*%fcs)) + log( (dB %*% fcs ) +  Kd) - log(Ks)
+
+prot = log(P(t)) = B %*% fcs
+log(R(t) = prot + log(dB %*% fcs + Kd) - log(Ks)
+
+```
+
+Which gets us a relatively neat parametrization of log(P) and log(R).
+
+
+
+With that out of the way, we can explain how I've parametrized the model. We want our steady state level to be one parameter we sample from, since it's always defined, and we want our half life to be the other. So the `transformed parameters` begins:
+
+
+```
+    #get Kd
+    lKd = log2(log(2)) -  l_pihalf;
+    Kd = exp(log(2)*lKd);
+    
+    //get pihalf
+    lKs = l_st -  lKd;
+```
+
+Then we implement the above equations for log(P) (`prot`) and log(R) (`mRNA`)
+
+```
+    //get the fold changes due to synthesis (which must be positive)
+    synth = exp(log(2)*lsynths);
+    
+    fcs = synth - rep_matrix( Kd,T);
+    
+    prot = append_col(prot0, fcs ) * (mybs)'; // get the full protein trajectory
+
+    mRNA = prot + log2(synth * (mydbs)' ) - rep_matrix(lKs,T); // get the mRNA trajectory this implies
+```
+
+Finally we implement the sigmoid likelihood for dropouts as they do in proDD:
+
+```
+  {
+    int counter = 1;
+    for(i in 1:G){
+      for(j in 1:nsamples){
+        if(is_inf(lMS[i, j])){
+          zetastar[counter] = zeta[j] * sqrt(1 + sigma2[i]/zeta[j]^2);
+          counter = counter + 1;
+        }
+      }
+    }
+  }
+
+```
+
+
+
+### Deriving priors
+
+Our model requires a number of prior parameters:
+
+```
+  sigma2 ~ scaled_inv_chi_square(nu, sqrt(eta));
+  l_st ~ normal(0,l_st_priorsd);
+  l_pihalf ~ normal(0,l_pihalf_priorsd);
+  for(t in 1:T){
+    lsynths[,t] ~ normal(0,l_ribo_priorsd);
+  }// put a prior on fold changes
+  prot0 ~ normal(mu0, sqrt(sigma20))
+```
+
+ProDD gets us some for free - nu and sqrt(eta) describe the global distribution of variance in protein levels, while `mu0` and `sqrt(sigma20) ` describe the variance in protein means - we can use this to describe our prior on the initial level of protein. Our prior on the log2 steady state ratio of protein to riboseq - `l_st` is centered on zero, since we've centered the data on zero, but we can look at the data overall to get a reasonable value for it's sd `l_st_priorsd`:
+
+```{r get l_st_priorsd}
+```
+
+#### Half life prior 
+
+The prior for `pihalf` is tricker. Luckily, the literature comes to our rescue. We'll use two papers to investigate the variance in protein half lives:
+
+- 1 McShane et al
+- 2 Schwannhauser et al
+
+Let's plot these data, and see how well they agree.
+
+```{r work outpriors,dev='svg',fig.height=7,message=F,include=T,warning=F,eval=T}
+library(here)
+select=dplyr::select
+schwandata<-suppressWarnings({readxl::read_excel(here('ext_data/schwannhauser_etal_2011_s3.xls'),sheet=1)})
+schwangnames <- schwandata%>%select(gene_names=`Gene Names`)%>%mutate(gene_name=gene_names%>%str_split(';'))%>%mutate(n=1:n())%>%unnest(gene_name)
+
+library(magrittr)
+mcshanedf<-fread(here('ext_data/mcshane_etal_2016_S1.csv'))
+mcshanethalfs<-mcshanedf%>%select(2,38,41)%>%set_colnames(c('gene_name','mcshane_half_life','McShane_deg_cat'))
+mcshanethalfs$mcshane_half_life%<>%str_replace('> 300','300')%>%as.numeric
+
+library(knitr)
+inclusiontable<-function(a,b){
+  all<-union(a,b)
+  table(all%in%a,all%in%b)
+}
+
+kable(inclusiontable(mcshanedf$`Gene names`,schwangnames$gene_name),label = 'name overlap between tables')
+
+schwanseldata <- schwandata%>%select(`Gene Names`,`Protein half-life average [h]`)
+bothhalflifedata<-mcshanethalfs%>%inner_join(schwangnames,by=c('gene_name'='gene_name'))%>%
+    cbind(.,schwanseldata[.$n,])
+
+bothhalflifedata$schw_halflife <- bothhalflifedata$`Protein half-life average [h]`
+
+thalfplot <- bothhalflifedata%>%
+  filter(schw_halflife<100)%>%
+  filter(McShane_deg_cat=='ED')%>%
+  {qplot(data=.,x=log10(`mcshane_half_life`),y=log10(schw_halflife))+
+      geom_smooth()+
+      theme_bw()}
+
+corlabel<-broom::tidy(bothhalflifedata%>%{cor.test(method='spearman',log10(.$schw_halflife),log10(.$mcshane_half_life))})%>%
+  {str_interp('rho = ${round(.$estimate,3)}\n p < 10^${ceiling(log10(.$p.value))}')}
+
+
+sddev = log2(schwanseldata$`Protein half-life average [h]`/36)%>%sd
+sdlabel = paste0('standard deviation = ',round(sddev,3))
+sddevmc = log2(mcshanethalfs$mcshane_half_life%>%.[.<300]%>%{./36})%>%sd
+sdlabelmc = paste0('standard deviation = ',round(sddevmc,3))
+
+ggpubr::ggarrange(plotlist=list(
+  thalfplot+ggtitle('Schwannhauser vs McShane Half lives\n(Exponential Decay Proteins)',subtitle=corlabel),
+  qplot(x = log2(schwanseldata$`Protein half-life average [h]`/36))+ggtitle('Schwannhauser et al Half Life Distribution (36h units)',subtitle=sdlabel)+theme_bw(),
+  qplot(x = log2(mcshanethalfs$mcshane_half_life/36))+ggtitle('McShane et al Half Life Distribution (36h units)',subtitle=sdlabelmc)+theme_bw()
+))
+
+
+```
+
+Our time points are 36 hours apart, and our parameters are on a log2 scale, so if we do that conversation form their half lives in hours we get the above. 
+
+These two distributions differ quite a lot in their means, though not so much in their spread (sd is about 1.6 for both). 
+
+It seems like a reasonable prior for our log2(pihalf) values is one that encompasses both of these, say mean -0.5, and sd 3.
+
+
+#### Fold change priors
+
+Getting a prior for the fold changes due to synthesis is more difficult. Since changes due to synthesis in the protein are going to be less than changes in the Riboseq, we can get a weak prior by just asking how much the Ribo-seq changes
+
+```{r get priors synth,message=F}
+library(MASS)
+allmsfcs <- allstandata$lMS %>% {reshape2::melt(.)}%>%set_colnames(c('gene','dataset','signal'))%>%separate(dataset,c('time','assay','rep'))%>%group_by(gene,time)%>%summarise(signal=mean(signal[is.finite(signal)]))%>%summarise(fc = list(diff(signal)))%>%unnest(fc)
+
+allribofcs <- allstandata$lribo %>% {reshape2::melt(.)}%>%set_colnames(c('gene','dataset','signal'))%>%separate(dataset,c('time','assay','rep'))%>%group_by(gene,time)%>%summarise(signal=mean(signal[is.finite(signal)]))%>%summarise(fc = list(diff(signal)))%>%unnest(fc)
+
+# (allmsfcs$fc%>%{qplot(.)+ggtitle('MS fold change distribution',subtitle = sdlabel)+theme_bw()})
+(allribofcs$fc%>%{qplot(.)+ggtitle('Ribo-seq fold change distribution',subtitle = sdlabel)+theme_bw()})
+
+fcvalues = allribofcs$fc
+
+fcvalues_censor = allmsfcs$fc%>%na.omit%>%.[between(.,quantile(.,0.01),quantile(.,0.99))]
+
+qqnorm(fcvalues)
+
+normdistsample <- rnorm(1e4,mean=mean(fcvalues,na.rm=T),sd=sd(fcvalues,na.rm=T))
+normallabel = str_interp("mean = ${round(mean(fcvalues,na.rm=T),3)}, sd = ${round(sd(fcvalues,na.rm=T),3)}")
+ggplot(data=data.frame(fcvalues),aes(x=fcvalues))+geom_density()+geom_density(data=data.frame(fcvalues=normdistsample),color=I('red'))+coord_cartesian(xlim=c(-3,3))+
+    ggtitle('comparison of fold change distribution with fitted Normal',subtitle = normallabel)
+
+
+tdistfit <- suppressWarnings(fitdistr(na.omit(allmsfcs$fc),'t'))
+
+tdistsample<-do.call(rt,list(n=1e5,tdistfit$estimate['df']))*(tdistfit$estimate['s'])+tdistfit$estimate['m']
+
+tdistsample<-do.call(rt,list(n=1e4,tdistfit$estimate['df']))*(tdistfit$estimate['s'])+tdistfit$estimate['m']
+tdistlabel=round(tdistfit$estimate,4)%>%{paste0(names(.),'=',round(.,3),collapse='  ')}
+ggplot(data=data.frame(fcvalues),aes(x=fcvalues))+geom_density()+geom_density(data=data.frame(fcvalues=tdistsample),color=I('red'))+coord_cartesian(xlim=c(-3,3))+
+    ggtitle('comparison of fold change distribution with fitted T distribution',subtitle=tdistlabel)
+qqplot(fcvalues,tdistsample)
+
+```
+
+So, it looks like the fold changes are better fit by a t distribution than a normal - most are small, some are quite large.
+
+####
+
+Finally, we need a prior parameter for our steady state ratio of Ribo-seq to Mass spec. Assuming things are mostly steady state, we can just compare the ratio between MS and protein levels:
+
+```{r,messages=F,warning=F}
+ggpubr::ggarrange(plotlist = list(
+qplot(allstandata$lMS[,1] - allstandata$lribo[,1])+theme_bw(),
+qplot(allstandata$lMS[,7] - allstandata$lribo[,5])+theme_bw(),
+qplot(allstandata$lMS[,13] - allstandata$lribo[,9])+theme_bw()
+),ncol = 3)
+
+```
+
+
+So, Looks a normal distribution with sd=3 will encompass this just fine.
+
+### adding the priors to our data fetching function
+
+```{r}
+
+get_dp_standata_withpriors <- function(id){
+  c(get_dp_standata(id),list(
+    l_pihalf_priorsd=3,
+    l_pihalf_priormu=0.5,
+    l_st_priorsd = 3,
+    l_ribo_priorsd = 3,
+    l_ribo_priornu = 2.7
+    )
+  )
+}
+
+stopifnot('l_ribo_priornu' %in% names(get_dp_standata_withpriors('ENSMUSP00000110057_4528')))
+stopifnot('l_pihalf_priormu' %in% names(get_dp_standata_withpriors('ENSMUSP00000110057_4528')))
+stopifnot('ribo_sigma' %in% names(get_dp_standata_withpriors('ENSMUSP00000110057_4528')))
+
+```
+
+
+### Checking the model recovers parameters
+
+As a quality check, we should check the model by simulating some data, then fitting that data again.
+
+
+```{r}
+
+dp_model = rstan::stan_model(dp_stanfile)
+satb2id = 'ENSMUSP00000110057_4528'
+
+sampdata = get_dp_standata_withpriors(satb2id)
+Kd = 3
+synths = c(3,3,10,0.1,0.1)
+prot0 = 10
+lKs = 0
+prot = sampdata$mybs %*% c(prot0,synths - Kd)
+ribo = prot + log2(sampdata$mydbs %*% c(synths)) - lKs
+
+sampdata$lMS[] = rep(prot,each=3)+rnorm(15,sd=0.01)
+sampdata$lribo[] = rep(ribo,each=2)+rnorm(10,sd=0.01)
+# 
+# optres <- optimizing(dp_model,data=sampdata,algorithm='Newton',iter=1,init=
+#              list(l_pihalf = array(log2(log(2)) - log2(Kd)),l_st = array(log2(Kd))
+#                sigma2 = array(0.2),lKd = log2(3) ,lsynths = array(log2(synths),dim=c(1,5)),prot0=array(prot0,dim=1)),
+#              
+# as_vector=F,hessian=F,iter=1)
+# optres$par
+
+# #
+# kable(
+#   data.frame(parameter=c('Kd','lKs'), real_value=c(Kd,lKs), recovered=c(optres$par$Kd,optres$par$lKs))  
+# )
+
+
+optres <- optimizing(dp_model,data=sampdata,algorithm='Newton',as_vector=F,hessian=F)
+
+kable(
+  data.frame(parameter=c('Kd','lKs'), real_value=c(Kd,lKs), recovered=c(optres$par$Kd,optres$par$lKs))  
+)
+
+
+```
+
+So indeed, our model is doing what it's supposed to, and recovering paramters from simulated data (at least in the case of increasing protein, where it aught to)
+
+### Inital model fits
+
+First, let's just fit this to 1 gene, 'Satb2' above.
+Random initializations don't work that well, so we'll use 'safely' to let this fail sometimes,
+then use the best results. 
+
+We'll use 'optimizing' with the 'Newton' algorithm. Since we aren't using many paramters, we can just
+calculate the hessian exactly.
+
+
+```{r, initialmodelfits}
+
+################################################################################
+########get our data, scale it, get prior parameters use proDD
+################################################################################
+
+#Random initializations don't work well, so we'lll 
+satb2fits<-replicate(simplify=F,5,{
+	pre = Sys.time()
+	optres<-safely(rstan::optimizing)(dp_model,data=get_dp_standata_withpriors('ENSMUSP00000110057_4528'),algorithm='Newton',as_vector=FALSE,hessian=TRUE)
+	Sys.time() - pre
+	optres
+})
+#get the ones that didn't crash
+satb2fits%<>%map('result')
+message(str_interp("of ${length(satb2fits)} runs,  ${sum(satb2fits%>%map_lgl(is.null))} failed with an error"))
+satb2fits%<>% .[!map_lgl(satb2fits,is.null)]
+#get best fit results
+bestoptes <- satb2fits[order(satb2fits%>%map_dbl('value'))%>%rev]%>%.[[1]]
+
+##get the plotting data
+meltmatrixdata <-function(x){x%>% {reshape2::melt(.)}%>%set_colnames(c('gene','dataset','signal'))%>%separate(dataset,c('time','assay','rep'))
+}
+standata <- get_dp_standata(uids4stan[1])
+msdata <- standata$lMS%>%meltmatrixdata
+ribodata <- standata$lribo%>%meltmatrixdata
+ggdata <- bind_rows(ribodata,msdata)
+ggdata$time%<>%factor(.,unique(.))%>%as.numeric
+ggdata$gene=1
+#parse out the optimization parameters
+optresdf <- data.frame(signal = bestoptes$par$prot[1,],time=1:5,assay='MS')%>%
+    mutate(lower = signal - 1.96*sqrt(bestoptes$par$sigma2[1]))%>%
+    mutate(upper = signal + 1.96*sqrt(bestoptes$par$sigma2[1]))
+standata_ribo_sigma <- standata$ribo_sigma[1,]%>%{split(.,names(.)%>%str_extract('[^_]+'))}%>%map_dbl(max)
+optresdf%<>%bind_rows(
+   data.frame(signal = bestoptes$par$mRNA[1,],time=1:5,assay='ribo')%>%
+    mutate(lower = signal - 1.96*sqrt(standata_ribo_sigma))%>%
+    mutate(upper = signal + 1.96*sqrt(standata_ribo_sigma))
+)
+qplot(data=ggdata,y=signal,x=time,geom='point',size=I(.5))+facet_grid(gene~assay)+theme_bw()+
+    geom_line(data=optresdf)+
+    geom_ribbon(data=optresdf,aes(ymin=lower,ymax=upper),fill=I('grey'),alpha=I(0.5))
+
+
+#get initial values for single genes - set all to zero except the variance parameter
+initvals <- bestoptes$par
+for(p in names(initvals))initvals[[p]] <- initvals[[p]] - initvals[[p]]
+initvals[['sigma2']] = initvals[['sigma2']]+0.2
+
+#This is a reasonable guess for all of our genes, stops the parameters flying off into space
+
+# initvals <- optres$par%>%{.['sigma2[1]<-0.2;.}%>%stanpars_to_list
+set.seed(0)
+
+
+```
+So this fit is at least not insane. Let's see if we can sample.
+
+### Sampling
+
+```{r, singlegenesampling}
+satb2uid <- rownames(matchedms_mat_rscl)[1]
+
+sampling<-rstan::sampling(dp_model,data=get_dp_standata_withpriors(satb2uid),chains=4,
+                          init=function(){bestoptes$par},control=list(adapt_delta=.98,max_treedepth=15),iter=2e3)
+sampling
+
+```
+
+
+### visualize posterior samples
+So although stan is angry about some divergent transitions, the Rhats and n_effs look okay, as does the pair plot:
+
+```{r, singlegeneposteriorplot,include=T,eval=T,fig.width=14,fig.height=14}
+pairplot <- mcmc_pairs(sampling,pars=vars(matches('lKs|sigma|st|pi|(prot\\[1,2\\])|(prot\\[1,3\\])|lp__')))
+pairplot
+```
+
+
+### visualizing approximations
+
+We might also ask, how good is the hessian from optimization as a guide to the posterior sampled this way? If we use stan's importance resampling? If we use variational bayes (we'll run vb several times to check it's consistency)
+
+
+```{r approxvis,message=F,warning=F}
+bestoptresvect<-rstan::optimizing(dp_model,data=get_dp_standata_withpriors(satb2uid),algorithm='Newton',as_vector=TRUE,hessian=TRUE,init=bestoptes$par,draws=1e3,importance_resampling=T)
+names(bestoptresvect$par)%<>%str_replace_all('[,\\[\\]]','.')%>%str_replace('\\.$','')
+
+modstannames <- .%>%str_replace_all('\\]$','')%>%str_replace_all('[\\[\\]\\,]','.')
+modstancolnames <- .%>%{colnames(.)%<>%modstannames;.}
+
+# stan crashes on me if I try using rstan::vb
+
+vbres_list <- ({replicate(n = 5,simplify=F,safely(quiet = T,rstan::vb)(dp_model,data=get_dp_standata_withpriors(satb2id)))})
+vbres_list%<>%map('result')%>%.[!map_lgl(.,is.null)]
+vbres_list%<>%{setNames(.,paste0('run_',seq_along(.)))}
+
+
+for(parname in colnames(bestoptresvect$hessian)%>%str_subset('pihalf|l_st|prot0')){
+    parsamples = sampling%>%as.data.frame%>%{colnames(.)%<>%modstannames;.}%>%.[[parname]]
+    paroptval = bestoptresvect$par[[parname]]
+    library(mvtnorm)
+    stderrs <- sqrt(diag(solve(-bestoptresvect$hessian)))[[parname]]
+    hessvars <- bestoptresvect$hessian%>%colnames
+    normal_approx = rmvnorm(1e4, bestoptresvect$par[hessvars], sigma = solve(-bestoptresvect$hessian))[,parname]
+    importance_resampled_draws = bestoptresvect$theta_tilde%>%modstancolnames%>%.[,parname]
+
+    vbres_df = vbres_list%>%map(.%>%as.data.frame%>%modstancolnames%>%.[[parname]])%>%enframe('replicate','value')%>%unnest(value)
+
+    print(list(
+      posterior_samples=data.frame(value =parsamples),
+      laplace_approx=data.frame(value=normal_approx),
+      importance_resampled_draws=data.frame(value=importance_resampled_draws)
+    )%>%bind_rows(.id='source') %>%
+      ggplot(aes(x=value,fill=source))+geom_density(alpha=I(0.3))+scale_x_continuous(parname)+theme_bw()+facet_grid(source ~ . ,scales = 'free_y')+
+      ggtitle(str_interp('Approximations vs Posterior Samples for ${parname},${satb2id}')))
+}
+
+
+for(parname in colnames(bestoptresvect$hessian)%>%str_subset('pihalf|l_st|prot0')){
+    parsamples = sampling%>%as.data.frame%>%{colnames(.)%<>%modstannames;.}%>%.[[parname]]
+   
+    vbres_df = vbres_list%>%map(.%>%as.data.frame%>%modstancolnames%>%.[[parname]])%>%enframe('replicate','value')%>%unnest(value)
+
+    print(list(
+    posterior_samples=data.frame(value =parsamples),
+      variational_inference = vbres_df
+    )%>%bind_rows(.id='source') %>%
+      ggplot(aes(x=value,fill=source,group=replicate))+scale_x_continuous(parname)+geom_density(alpha=I(0.3))+theme_bw()+facet_grid(source ~ . ,scales = 'free_y')+
+      ggtitle(str_interp('Variational Bayes vs Posterior Samples for ${parname},${satb2id}')))
+}
+
+
+```
+This looks pretty bad for the parameters we really want - l_st and pihalf.  The Posterior samples are much more widely distributed. Variational bayes is failing totally.
+
+
+
+<!-- ## Load the stan files -->
+
+<!-- ```{r,loadstan,eval=T,include=T,echo=T,cache=F} -->
+<!-- #Model with additional normalization parameters shared between genes, for each ribo and prot timepoint -->
+<!-- #This one doesn't seem necessary -->
+<!-- dp_stanfile_ribnorm = here('src/Stan/mod_proDD_ribnorm.stan')%T>%{stopifnot(file.exists(.))} -->
+<!-- dp_model_ribnorm = rstan::stan_model(dp_stanfile_ribnorm)# -->
+
+<!-- #experimental model with deviances from the kinetic trajectory -->
+<!-- dp_stanfile_dev = here('src/Stan/mod_proDD_dev.stan')%T>%{stopifnot(file.exists(.))} -->
+<!-- dp_model_dev = rstan::stan_model(dp_stanfile_dev)# -->
+<!-- ``` -->
+
+
+
+<!-- The second model includes constant factors applied to the columns of the Ribo and MS matrix. -->
+<!-- I was suspicious these meight be required. Right now they don't seem to fit very far from zero -->
+<!-- but I don't know if optimizing is working well.... (An EM style approach for this might be better). -->
+
+<!-- The final model was an experiment, and tried to seperate the MS technical variance from the trajectories -->
+<!-- described in the first model. Such variances are probably of interest for clustering etc, but with the extra -->
+<!-- parameters I think I need to be sure that multi-gene fitting is going well. Right now the single gene model isn't -->
+<!-- fitting that well so I guess that problem needs to be solved first... -->
+
+
+<!-- ```{r,toincorporate,eval=F} -->
+
+
+<!-- optres$hessian -->
+
+
+<!-- require(R.utils) -->
+<!-- require(rstan) -->
+
+
+<!-- # initvals <- optres$par%>%{.['sigma2[1]<-0.2;.}%>%stanpars_to_list -->
+<!-- set.seed(0) -->
+
+<!-- names(optres$par)%<>%str_replace_all('[,\\[\\]]','.')%>%str_replace('\\.$','') -->
+<!-- optres$par[colnames(optres$hessian)] - 1.96*sqrt(diag(solve(-optres$hessian))) -->
+<!-- optres$par[colnames(optres$hessian)] + 1.96*sqrt(diag(solve(-optres$hessian))) -->
+
+
+<!-- optres$hessian -->
+
+
+<!-- require(R.utils) -->
+<!-- require(rstan) -->
+
+<!-- ################################################################################ -->
+<!-- ########Run optimization over all individual genes -->
+<!-- ################################################################################ -->
+
+<!-- # 'data/geneoptfits.rds'%>%file.remove -->
+<!-- # selgene='ENSMUSP00000110057_4528' -->
+
+<!-- if(!file.exists('data/geneoptfits.rds')){ -->
+<!--   # -->
+<!--   require('R.utils') -->
+<!--   genefits <- list() -->
+<!--   # 			 -->
+<!--   genefits <- mclapply(mc.cores=20,uids4stan,(function(selgene){ -->
+<!--     cat(paste0('.',which(uids4stan==selgene),'..')) -->
+<!--     # -->
+<!--     selgenefits<-lapply(rep(selgene,5),safely(function(selgene){ -->
+<!--       withTimeout(timeout=15,{ -->
+<!--         # message(selgene) -->
+<!--         optdat <- get_dp_standata(selgene) -->
+<!--         optdat$lMS -->
+<!--         if(sum(is.finite(optdat$lMS))<2) return(NULL) -->
+<!--         #apparently we need actual hessian - Netwon succeeds for individual genes where -->
+<!--         #L-BFGS does not.  -->
+<!--         optimizing(dp_model,data=optdat,init=initvals,algorithm='Newton',as_vector=F,hessian=TRUE)  -->
+<!--       }) -->
+<!--     })) -->
+<!--     selgenefits -->
+<!--   })) -->
+<!--   saveRDS(genefits,file='data/geneoptfits.rds') -->
+<!-- }else{ -->
+<!--   genefits<- readRDS((file='data/geneoptfits.rds')) -->
+<!-- } -->
+<!-- genefits%>%length -->
+<!-- #see how many crashed for each gene -->
+<!-- genefits%>%map_dbl(.%>%map('result')%>%map_lgl(is.null)%>%sum)%>%table -->
+<!-- #None. -->
+<!-- genefitsres<- genefits%>%map(.%>%map('result')) -->
+<!-- genefitsres%<>%setNames(uids4stan) -->
+
+<!-- #see how many converge -->
+<!-- convnums <- genefitsres%>%map_dbl(.%>%map_dbl('return_code')%>%`==`(0)%>%sum) -->
+<!-- genefitsres <- genefitsres[which(convnums!=0)] -->
+<!-- conv_uprotids <- genefitsres%>%names -->
+<!-- stopifnot(all(convnums==5)) -->
+
+<!-- #get the best fit object for each gene -->
+<!-- bestfits <- lapply(genefitsres,function(selgenefits){ -->
+<!--   bestfit<-selgenefits%>%map_dbl('value')%>%which.max -->
+<!--   selgenefits[[bestfit]] -->
+<!-- }) -->
+<!-- #and optimized parameters -->
+<!-- bestfitinits <- bestfits%>%map('par') -->
+<!-- #name these -->
+<!-- bestfits%<>%setNames(conv_uprotids) -->
+<!-- bestfitinits%<>%setNames(conv_uprotids) -->
+
+<!-- diag(solve(-genefitsres[[1]][[1]]$hessian)) -->
+
+<!-- genefitsres[[1]]%>%map('par')%>%map('l_st') -->
+<!-- genefitsres[[1]]%>%map('par')%>%map('l_pihalf') -->
+
+<!-- #All are now converging, so probably not ncessary to do this subsetting -->
+<!-- finaltestgenes <- conv_uprotids -->
+
+<!-- #now select the best opt fit and optimize again witht that -->
+<!-- #this should succeed without warnings -->
+<!-- # options(warn=1) -->
+<!-- # bestfitinits%>%names%>%setdiff(rownames(matchedms_mat_rscl)) -->
+<!-- # reopts <- imap(bestfitinits,safely(function(bestfitinit,selgene_uid){ -->
+<!-- # optres<-rstan::optimizing(dp_model,data=get_dp_standata(selgene_uid), -->
+<!-- # init=bestfitinit,algorithm='Newton') -->
+<!-- # })) -->
+<!-- # reopts %<>% map('result') -->
+<!-- # reopts%>%map('return_code')%>%`!=`(0)%>%which%>%names -->
+<!-- # finaltestgenes <-reopts%>%map('return_code')%>%`==`(0)%>%which%>%names -->
+
+<!-- ##we now have the modes for each gene, let's combine these into a list of parameters for the joint model -->
+<!-- get_comb_initvals <- function(bestfitinits){ -->
+<!--   combinitvals <- lapply(names(bestfitinits[[1]])%>%setNames(.,.),function(argind){ -->
+<!--     bestfitinits%>% -->
+<!--       map(argind)%>% -->
+<!--       setNames(.,seq_along(.))%>% -->
+<!--       do.call(what=partial(abind::abind,along=1)) -->
+<!--   }) -->
+<!--   combinitvals	 -->
+<!-- } -->
+<!-- combinitvals <- get_comb_initvals(bestfitinits) -->
+
+<!-- #Now what if we try to fit normalization factors for each timepoint, fitting over all -->
+<!-- #genes at once? -->
+<!-- ribonorm_combinitvals <- c(combinitvals,list('protnorm'=array(rep(0,5),dim=list(5)),'ribnorm'=array(rep(0,5),dim=list(5)))) -->
+
+<!-- stop('Now to try optimizing norm factors over all genes') -->
+<!-- message(paste0('optimizing simple model on : ',length(finaltestgenes)),' genes') -->
+
+<!-- # LBFGS doesn't seem to work at all -->
+<!-- alloptres<-rstan::optimizing(dp_model,data=get_dp_standata(finaltestgenes), -->
+<!--                              init=combinitvals,as_vector=F,verbose=T,algorithm='LBFGS') -->
+
+<!-- #now try to optimize the Ribo-seq libnorm factors as well -->
+<!-- set.seed(0) -->
+<!-- #We can fit these, but they change minimally -->
+<!-- ribonormopt <- optimizing(dp_model_ribnorm, -->
+<!--                           data=get_dp_standata(finaltestgenes), -->
+<!--                           init=ribonorm_combinitvals, -->
+<!--                           as_vector=F,save_iterations=FALSE,algorithm='LBFGS',verbose=TRUE,iter=2e3,hessian=FALSE) -->
+
+<!-- #So - the avlues for these don't seem to be changing very much - and are converging on pretty mininiscule values -->
+<!-- #Which makes me think I can ignore them. -->
+<!-- plot(ribonormopt$par$ribnorm) -->
+<!-- plot(ribonormopt$par$protnorm) -->
+
+<!-- stop() -->
+
+<!-- mschangegenes <- finaltestgenes%>%interect(metainfo%>%filter(sig_MS_change)) -->
+
+<!-- ribonormopt <- optimizing(dp_model_ribnorm, -->
+<!--                           data=get_dp_standata(finaltestgenes), -->
+<!--                           init=ribonorm_combinitvals, -->
+<!--                           as_vector=F,algorithm='LBFGS',verbose=TRUE,iter=1,hessian=FALSE) -->
+
+
+<!-- ribonormopt$par$ribnorm%>%txtplot -->
+<!-- ribonormopt$par$protnorm%>%txtplot -->
+
+
+<!-- #Now let's also try our model that allows protein deviations - this will be  -->
+<!-- #underdetermined, unless we have multiple genes in play -->
+<!-- finaltestgenes%>%head -->
+<!-- devtestgenes <- finaltestgenes%>%head(100) -->
+
+<!-- #Okay so this goes nuts and fits massive deviations -->
+<!-- devopt <- optimizing(dp_model_dev, -->
+<!--                      data=get_dp_standata(devtestgenes), -->
+<!--                      init=get_comb_initvals(bestfitinits[devtestgenes]), -->
+<!--                      as_vector=F,algorithm='LBFGS',verbose=TRUE,iter=1e3,hessian=FALSE) -->
+
+<!-- # BiocManager::install(c('tidybayes')) -->
+<!-- protmeanvect <- allstandata$lMS[1,]%>%split(ceiling(seq_along(.)/3))%>%map_dbl(mean) -->
+<!-- devopt$par$p_dev[1,] -->
+<!-- devopt$par$p_dev[1,] -->
+
+<!-- #so the deviancem model fits better -->
+<!-- sum(abs(devopt$par$prot[1,] - protmeanvect)) -->
+<!-- sum(abs(optres$par$prot[1,] - protmeanvect)) -->
+
+<!-- #Okay but surely those deviances effect protein a LOT -->
+<!-- teval <- optimizing(dp_model_dev, -->
+<!--                     data=get_dp_standata(devtestgenes), -->
+<!--                     init=devopt$par%>%{.$p_dev[,] <- 0; . }, -->
+<!--                     as_vector=F,algorithm='LBFGS',verbose=TRUE,iter=50e3,hessian=FALSE) -->
+
+<!-- teval$par$prot[1,] -->
+<!-- alloptres$par$prot[1,] -->
+<!-- teval$par$p_dev[1,] -->
+
+<!-- ################################################################################ -->
+<!-- ########Now, let's try actually sampling from the posterior  -->
+<!-- ################################################################################ -->
+<!-- #for one gene -->
+<!-- i=1 -->
+
+<!-- #This doesn't work that well.... -->
+<!-- samplings <- imap(bestfitinits[finaltestgenes[1]],safely(function(bestfitinit,selgene_uid){ -->
+<!--   optres<-rstan::sampling(dp_model,data=get_dp_standata(selgene_uid),chains=4, -->
+<!--                           init=function(){bestfitinit},control=list(adapt_delta=.9),iter=1e3) -->
+<!-- })) -->
+<!-- samplings%<>%map('result') -->
+
+<!-- #try sampling from a model with the deviations -->
+<!-- pdevsamplings  <- sampling(dp_model_dev, -->
+<!--                            chains=4, -->
+<!--                            data=get_dp_standata(devtestgenes), -->
+<!--                            init=function(){devopt$par}, -->
+<!--                            verbose=TRUE,control=list(adapt_delta=.9),iter=400) -->
+
+<!-- #look at the n_eff for these genes -->
+<!-- summary(ribonormopt)$summary%>% -->
+<!--   {x=.;rownames(x)%>%parse_stan_pars(c('gene','time'))%>%bind_rows%>%cbind(.,x)}%>% -->
+<!--   filter(parameter%>%str_detect('pi|Ks'))%>% -->
+<!--   group_by(parameter)%>% -->
+<!--   slice(1:3)%>%as.data.frame -->
+
+<!-- #This emphatically does not help... -->
+<!-- #now plot -->
+<!-- plotfile<- here(paste0('plots/','tmp','.pdf')) -->
+<!-- pdf(plotfile) -->
+
+<!-- dev.off() -->
+<!-- normalizePath(plotfile) -->
+
+
+
+<!-- #now plot -->
+<!-- plotfile<- here(paste0('plots/','tmp','.pdf')) -->
+<!-- pdf(plotfile) -->
+<!-- gname = filter(metainfo,uprotein_id==names(samplings)[[1]])%>%.$gene_name -->
+<!-- pairplot <- mcmc_pairs(samplings[[i]],pars=vars(matches('lKs|sigma|st|pi|(prot\\[1,2\\])|(prot\\[1,3\\])|lp__')),save_gg_objects=TRUE) -->
+<!-- # str(pairplot) -->
+<!-- print(pairplot) -->
+<!-- dev.off() -->
+<!-- normalizePath(plotfile) -->
+
+
+
+
+
+<!-- ``` -->
+
+<!-- Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*. -->
+
+<!-- When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).  -->
+
+<!-- The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed. -->
+
