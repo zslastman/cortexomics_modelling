@@ -6,18 +6,15 @@ output:
 
 ---
 
-<!-- This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code.  -->
-<!-- Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*.  -->
-
 This notebook shows the currnet state of the analysis of protein synthesis trajectories in mouse neocortex, using data from
 Ribo-seq and Mass Spectrometry.
 
 ## Setup
 ```{r}
-knitr::opts_chunk$set(echo=T,include=T,eval=T,cache=F,root.dir='/fast/groups/ag_ohler/work/dharnet_m/cortexomics_modeling/',dev='svg')
+knitr::opts_chunk$set(echo=T,cache=F,root.dir='/fast/groups/ag_ohler/work/dharnet_m/cortexomics_modeling/',dev='svg',message=F,warning=F)
 ```
 
-```{r,eval=T,echo=T,include=T,cache=F}
+```{r}
 #' First we'll load the necessary librarys, including proDD which is only available on github.
 library(rmarkdown)
 library(knitr)
@@ -31,16 +28,19 @@ library(here)
 library(assertthat)
 library(stringr)
 library(tidyverse)
+library(splines2)
 library(abind)
 library(ggpubr)
 library(data.table)
 library(zeallot)
 library(splines)
 library(parallel)
+
 library(broom)
 # #
 library(rstan)
 library(txtplot)
+
 
 #Load proDD from the github
 tryCatch(library(proDD),error=function(e){
@@ -51,7 +51,7 @@ tryCatch(library(proDD),error=function(e){
   devtools::install_github("const-ae/proDD")
 })
 
-source(here('src/R/Functions/rstan_functions.R'))
+base::source(here('src/R/Functions/rstan_functions.R'))
 suppressMessages({library(bayesplot)})
 
 ```
@@ -59,6 +59,7 @@ suppressMessages({library(bayesplot)})
 ## Load, the data
 
 We'll use a table of metainfo to select the protein IDs for which the data looks okay - i.e. the link between ribo and mass spec looks good, the mass spec actually changes over time (as per a simple linear model) and the number of missing stages in the mass spec isn't greater than 2.
+
 ```{r,fetchdata,eval=T}
 #load the metadata on all our genes and the many IDs involved
 metainfo<-suppressMessages({read_tsv(here('data/metainfo.tsv'))})
@@ -175,6 +176,7 @@ the proddparam object fitted above, the constants describing the data dimensions
 to deal with the differential equation governing synthesis and decay, etc etc.
 
 ```{r}
+
 #function that pulls out the stan data we need in the right shape, and pairs it with proDD parameters etc. 
 get_dp_standata <- function(sel_uprotein_id,
                             matchedms_mat_rscl,ribomat,ribomatrscl,
@@ -635,7 +637,7 @@ kable(
 
 ```
 
-So indeed, our model is doing what it's supposed to, and recovering paramters from simulated data (at least in the case of increasing protein, where it aught to)
+This works acceptably. So indeed, our model is doing what it's supposed to, and recovering paramters from simulated data at least in the case of increasing protein, where it aught to.
 
 ### Inital model fits
 
@@ -712,7 +714,7 @@ satb2uid <- rownames(matchedms_mat_rscl)[1]
 
 sampling<-rstan::sampling(dp_model,data=get_dp_standata_withpriors(satb2uid),chains=4,
                           init=function(){bestoptes$par},control=list(adapt_delta=.98,max_treedepth=15),iter=2e3)
-sampling
+
 
 ```
 
@@ -721,6 +723,7 @@ sampling
 So although stan is angry about some divergent transitions, the Rhats and n_effs look okay, as does the pair plot:
 
 ```{r, singlegeneposteriorplot,include=T,eval=T,fig.width=14,fig.height=14}
+sampling
 pairplot <- mcmc_pairs(sampling,pars=vars(matches('lKs|sigma|st|pi|(prot\\[1,2\\])|(prot\\[1,3\\])|lp__')))
 pairplot
 ```

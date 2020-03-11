@@ -107,6 +107,10 @@ stopifnot(mybs %*% c(prot0,mym) == Pt
 correctinv = solve(diag(rep(1,5)) - diag(newfcs[,1]) %*% mybs[,-1])
 #!!!!
 #
+
+
+
+
 ```
 
 so the above is an acceptable solution.It might have a more effient solution though. 
@@ -281,6 +285,90 @@ ggpubr::ggarrange(plotlist=list(qplot(1:5,c(prot)),qplot(1:5,c(mRNA))))
 
 ```{stan modeltest,output.var =st_modeltest}
 
+
+```
+
+As per uri anlon or javonivic, if we have time dependent synthesis and decay, then Y(t) = exp(-Integrate(0,t,decay(t))) * (Y(0) + Integrate(0,t,Synthesis(t')exp(Integrate(0,t,decay(t)))))
+
+(see page 37)
+
+
+So. We want a form of D where - D = - Integrate(0,t,decay(t)), so the integrated decay rate from time 0 to time t. This appears in positive form to 'cancel out' some of the decay for the more recently produced molecules, in the right integral. If decay t is flat then it's just d_0 t. If it's a linear step it's ( (d_1 x^2) / 2) + d_0 x (put this in wolfram (integrate [ a + a_1 x  dx , 0 , t]) )
+
+If we put this into wolfram:
+ exp(  - d_0  T  )  * ( P_0 + Integrate [ R (s_0 + s_1 t ) * exp(  d_0 (t) )  dt , from 0 to T ] )
+
+
+```{r}
+
+e = exp(1)
+d_0 = 0.1
+T=1
+R=1
+s_0 = 20
+s_1 = 0
+P_0 = 100
+T=4
+
+library(tidyverse)
+
+lapply(1:100,function(T){
+  e^(d_0*(-T))*((R*(d_0*s_0*(e^(d_0*T) - 1) + s_1*(e^(d_0*T)*(d_0*T - 1) + 1)))/d_0^2 + P_0)
+})%>%unlist%>%plot(ylim = c(0,max(.)))
+stepsynthdeg = function(e = exp(1),
+d_0 = 0.1,
+T=1,
+R=1,
+s_0 = 20,
+s_1 = 0,
+P_0 = 100){
+  e^(d_0*(-T))*((R*(d_0*s_0*(e^(d_0*T) - 1) + s_1*(e^(d_0*T)*(d_0*T - 1) + 1)))/d_0^2 + P_0)
+}
+
+Ks=1
+d_0 = 0.6
+ribo = c(10,10,10,10,100,100,30,30,30,30,30,30)
+P = rep(0,length(ribo))
+P[1] = 10*ribo[1]*R * (1/d_0)
+for(i in 2:length(ribo)){
+    #if(i==7)stop()
+    P[i] = stepsynthdeg(d_0=d_0,T=1,R = 2, s_0 = ribo[i-1],s_1 =  ribo[i] -  ribo[i-1],P_0 = P[i-1])
+}
+i=8
+par(mfrow=(c(2,1)))
+plot(ribo)
+plot(P)
+#
+#e^(d_0*(-T)) ((R*(d_0*s_0*(e^(d_0*T) - 1) + s_1*(e^(d_0*T) (d_0*T - 1) + 1)))/d_0^2 + P_0)
+
+
+```
+
+
+So this works the way we want it to. Can we use it?
+
+first let's eliminate T
+
+e^(-d_0) ((R ((e^(d_0) - 1) d_0 s_0 + (e^(d_0) (d_0 - 1) + 1) s_1))/d_0^2 + P_0)
+
+#split it up a bit
+(exp ( -d) * P0) + R * (exp(-d_0)(  (((exp(d) - 1)*d*s_0)/d^2)      +  (exp(d)*(d-1)+1)*s_1)/d^2 )
+
+#now let's apply log and logsumexp
+log ( (exp ( -d) * P0) + R * (exp(-d_0)(  (((exp(d) - 1)*d*s_0)/d^2)      +  (exp(d)*(d-1)+1)*s_1)/d^2 ))
+#oh and make R Ks
+= logSumExp( log(exp(-d)*P0), log(Ks) +  log((exp(-d_0))) + ((((exp(d) - 1)*d*s_0)/d^2)      +  (exp(d)*(d-1)+1)*s_1)/d^2 ) ) )
+
+aaactualyl, let's do this in terms of time stages rather than slope
+t wolfram
+ log ( exp(  - d_0   )  * ( P_0 + Integrate [ R (s_0 + (s_1 - s_0)  t ) * exp(  d_0 (t) )  dt , from 0 to 1 ] ))
+#Split previous and new 
+LogSumExp(
+  log(e^(-d_0)* P0 )),#the easy part
+  exp(-d) ((R (-(d + 1) s_0 + e^(d_0) ((d - 1) s_1 + s_0) + s_1))/d_0^2))
+
+
+```{r}
 
 ```
 
