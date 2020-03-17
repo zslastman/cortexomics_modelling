@@ -612,8 +612,14 @@ lKs = 0
 prot = sampdata$mybs %*% c(prot0,synths - Kd)
 ribo = prot + log2(sampdata$mydbs %*% c(synths)) - lKs
 
+
 sampdata$lMS[] = rep(prot,each=3)+rnorm(15,sd=0.01)
 sampdata$lribo[] = rep(ribo,each=2)+rnorm(10,sd=0.01)
+
+
+
+
+
 # 
 # optres <- optimizing(dp_model,data=sampdata,algorithm='Newton',iter=1,init=
 #              list(l_pihalf = array(log2(log(2)) - log2(Kd)),l_st = array(log2(Kd))
@@ -788,267 +794,266 @@ This looks pretty bad for the parameters we really want - l_st and pihalf.  The 
 
 
 
-<!-- ## Load the stan files -->
-
-<!-- ```{r,loadstan,eval=T,include=T,echo=T,cache=F} -->
-<!-- #Model with additional normalization parameters shared between genes, for each ribo and prot timepoint -->
-<!-- #This one doesn't seem necessary -->
-<!-- dp_stanfile_ribnorm = here('src/Stan/mod_proDD_ribnorm.stan')%T>%{stopifnot(file.exists(.))} -->
-<!-- dp_model_ribnorm = rstan::stan_model(dp_stanfile_ribnorm)# -->
-
-<!-- #experimental model with deviances from the kinetic trajectory -->
-<!-- dp_stanfile_dev = here('src/Stan/mod_proDD_dev.stan')%T>%{stopifnot(file.exists(.))} -->
-<!-- dp_model_dev = rstan::stan_model(dp_stanfile_dev)# -->
-<!-- ``` -->
-
-
-
-<!-- The second model includes constant factors applied to the columns of the Ribo and MS matrix. -->
-<!-- I was suspicious these meight be required. Right now they don't seem to fit very far from zero -->
-<!-- but I don't know if optimizing is working well.... (An EM style approach for this might be better). -->
-
-<!-- The final model was an experiment, and tried to seperate the MS technical variance from the trajectories -->
-<!-- described in the first model. Such variances are probably of interest for clustering etc, but with the extra -->
-<!-- parameters I think I need to be sure that multi-gene fitting is going well. Right now the single gene model isn't -->
-<!-- fitting that well so I guess that problem needs to be solved first... -->
-
-
-<!-- ```{r,toincorporate,eval=F} -->
-
-
-<!-- optres$hessian -->
-
-
-<!-- require(R.utils) -->
-<!-- require(rstan) -->
-
-
-<!-- # initvals <- optres$par%>%{.['sigma2[1]<-0.2;.}%>%stanpars_to_list -->
-<!-- set.seed(0) -->
-
-<!-- names(optres$par)%<>%str_replace_all('[,\\[\\]]','.')%>%str_replace('\\.$','') -->
-<!-- optres$par[colnames(optres$hessian)] - 1.96*sqrt(diag(solve(-optres$hessian))) -->
-<!-- optres$par[colnames(optres$hessian)] + 1.96*sqrt(diag(solve(-optres$hessian))) -->
-
-
-<!-- optres$hessian -->
-
-
-<!-- require(R.utils) -->
-<!-- require(rstan) -->
-
-<!-- ################################################################################ -->
-<!-- ########Run optimization over all individual genes -->
-<!-- ################################################################################ -->
-
-<!-- # 'data/geneoptfits.rds'%>%file.remove -->
-<!-- # selgene='ENSMUSP00000110057_4528' -->
-
-<!-- if(!file.exists('data/geneoptfits.rds')){ -->
-<!--   # -->
-<!--   require('R.utils') -->
-<!--   genefits <- list() -->
-<!--   # 			 -->
-<!--   genefits <- mclapply(mc.cores=20,uids4stan,(function(selgene){ -->
-<!--     cat(paste0('.',which(uids4stan==selgene),'..')) -->
-<!--     # -->
-<!--     selgenefits<-lapply(rep(selgene,5),safely(function(selgene){ -->
-<!--       withTimeout(timeout=15,{ -->
-<!--         # message(selgene) -->
-<!--         optdat <- get_dp_standata(selgene) -->
-<!--         optdat$lMS -->
-<!--         if(sum(is.finite(optdat$lMS))<2) return(NULL) -->
-<!--         #apparently we need actual hessian - Netwon succeeds for individual genes where -->
-<!--         #L-BFGS does not.  -->
-<!--         optimizing(dp_model,data=optdat,init=initvals,algorithm='Newton',as_vector=F,hessian=TRUE)  -->
-<!--       }) -->
-<!--     })) -->
-<!--     selgenefits -->
-<!--   })) -->
-<!--   saveRDS(genefits,file='data/geneoptfits.rds') -->
-<!-- }else{ -->
-<!--   genefits<- readRDS((file='data/geneoptfits.rds')) -->
-<!-- } -->
-<!-- genefits%>%length -->
-<!-- #see how many crashed for each gene -->
-<!-- genefits%>%map_dbl(.%>%map('result')%>%map_lgl(is.null)%>%sum)%>%table -->
-<!-- #None. -->
-<!-- genefitsres<- genefits%>%map(.%>%map('result')) -->
-<!-- genefitsres%<>%setNames(uids4stan) -->
-
-<!-- #see how many converge -->
-<!-- convnums <- genefitsres%>%map_dbl(.%>%map_dbl('return_code')%>%`==`(0)%>%sum) -->
-<!-- genefitsres <- genefitsres[which(convnums!=0)] -->
-<!-- conv_uprotids <- genefitsres%>%names -->
-<!-- stopifnot(all(convnums==5)) -->
-
-<!-- #get the best fit object for each gene -->
-<!-- bestfits <- lapply(genefitsres,function(selgenefits){ -->
-<!--   bestfit<-selgenefits%>%map_dbl('value')%>%which.max -->
-<!--   selgenefits[[bestfit]] -->
-<!-- }) -->
-<!-- #and optimized parameters -->
-<!-- bestfitinits <- bestfits%>%map('par') -->
-<!-- #name these -->
-<!-- bestfits%<>%setNames(conv_uprotids) -->
-<!-- bestfitinits%<>%setNames(conv_uprotids) -->
-
-<!-- diag(solve(-genefitsres[[1]][[1]]$hessian)) -->
-
-<!-- genefitsres[[1]]%>%map('par')%>%map('l_st') -->
-<!-- genefitsres[[1]]%>%map('par')%>%map('l_pihalf') -->
-
-<!-- #All are now converging, so probably not ncessary to do this subsetting -->
-<!-- finaltestgenes <- conv_uprotids -->
-
-<!-- #now select the best opt fit and optimize again witht that -->
-<!-- #this should succeed without warnings -->
-<!-- # options(warn=1) -->
-<!-- # bestfitinits%>%names%>%setdiff(rownames(matchedms_mat_rscl)) -->
-<!-- # reopts <- imap(bestfitinits,safely(function(bestfitinit,selgene_uid){ -->
-<!-- # optres<-rstan::optimizing(dp_model,data=get_dp_standata(selgene_uid), -->
-<!-- # init=bestfitinit,algorithm='Newton') -->
-<!-- # })) -->
-<!-- # reopts %<>% map('result') -->
-<!-- # reopts%>%map('return_code')%>%`!=`(0)%>%which%>%names -->
-<!-- # finaltestgenes <-reopts%>%map('return_code')%>%`==`(0)%>%which%>%names -->
-
-<!-- ##we now have the modes for each gene, let's combine these into a list of parameters for the joint model -->
-<!-- get_comb_initvals <- function(bestfitinits){ -->
-<!--   combinitvals <- lapply(names(bestfitinits[[1]])%>%setNames(.,.),function(argind){ -->
-<!--     bestfitinits%>% -->
-<!--       map(argind)%>% -->
-<!--       setNames(.,seq_along(.))%>% -->
-<!--       do.call(what=partial(abind::abind,along=1)) -->
-<!--   }) -->
-<!--   combinitvals	 -->
-<!-- } -->
-<!-- combinitvals <- get_comb_initvals(bestfitinits) -->
-
-<!-- #Now what if we try to fit normalization factors for each timepoint, fitting over all -->
-<!-- #genes at once? -->
-<!-- ribonorm_combinitvals <- c(combinitvals,list('protnorm'=array(rep(0,5),dim=list(5)),'ribnorm'=array(rep(0,5),dim=list(5)))) -->
-
-<!-- stop('Now to try optimizing norm factors over all genes') -->
-<!-- message(paste0('optimizing simple model on : ',length(finaltestgenes)),' genes') -->
-
-<!-- # LBFGS doesn't seem to work at all -->
-<!-- alloptres<-rstan::optimizing(dp_model,data=get_dp_standata(finaltestgenes), -->
-<!--                              init=combinitvals,as_vector=F,verbose=T,algorithm='LBFGS') -->
-
-<!-- #now try to optimize the Ribo-seq libnorm factors as well -->
-<!-- set.seed(0) -->
-<!-- #We can fit these, but they change minimally -->
-<!-- ribonormopt <- optimizing(dp_model_ribnorm, -->
-<!--                           data=get_dp_standata(finaltestgenes), -->
-<!--                           init=ribonorm_combinitvals, -->
-<!--                           as_vector=F,save_iterations=FALSE,algorithm='LBFGS',verbose=TRUE,iter=2e3,hessian=FALSE) -->
-
-<!-- #So - the avlues for these don't seem to be changing very much - and are converging on pretty mininiscule values -->
-<!-- #Which makes me think I can ignore them. -->
-<!-- plot(ribonormopt$par$ribnorm) -->
-<!-- plot(ribonormopt$par$protnorm) -->
-
-<!-- stop() -->
-
-<!-- mschangegenes <- finaltestgenes%>%interect(metainfo%>%filter(sig_MS_change)) -->
-
-<!-- ribonormopt <- optimizing(dp_model_ribnorm, -->
-<!--                           data=get_dp_standata(finaltestgenes), -->
-<!--                           init=ribonorm_combinitvals, -->
-<!--                           as_vector=F,algorithm='LBFGS',verbose=TRUE,iter=1,hessian=FALSE) -->
-
-
-<!-- ribonormopt$par$ribnorm%>%txtplot -->
-<!-- ribonormopt$par$protnorm%>%txtplot -->
-
-
-<!-- #Now let's also try our model that allows protein deviations - this will be  -->
-<!-- #underdetermined, unless we have multiple genes in play -->
-<!-- finaltestgenes%>%head -->
-<!-- devtestgenes <- finaltestgenes%>%head(100) -->
-
-<!-- #Okay so this goes nuts and fits massive deviations -->
-<!-- devopt <- optimizing(dp_model_dev, -->
-<!--                      data=get_dp_standata(devtestgenes), -->
-<!--                      init=get_comb_initvals(bestfitinits[devtestgenes]), -->
-<!--                      as_vector=F,algorithm='LBFGS',verbose=TRUE,iter=1e3,hessian=FALSE) -->
-
-<!-- # BiocManager::install(c('tidybayes')) -->
-<!-- protmeanvect <- allstandata$lMS[1,]%>%split(ceiling(seq_along(.)/3))%>%map_dbl(mean) -->
-<!-- devopt$par$p_dev[1,] -->
-<!-- devopt$par$p_dev[1,] -->
-
-<!-- #so the deviancem model fits better -->
-<!-- sum(abs(devopt$par$prot[1,] - protmeanvect)) -->
-<!-- sum(abs(optres$par$prot[1,] - protmeanvect)) -->
-
-<!-- #Okay but surely those deviances effect protein a LOT -->
-<!-- teval <- optimizing(dp_model_dev, -->
-<!--                     data=get_dp_standata(devtestgenes), -->
-<!--                     init=devopt$par%>%{.$p_dev[,] <- 0; . }, -->
-<!--                     as_vector=F,algorithm='LBFGS',verbose=TRUE,iter=50e3,hessian=FALSE) -->
-
-<!-- teval$par$prot[1,] -->
-<!-- alloptres$par$prot[1,] -->
-<!-- teval$par$p_dev[1,] -->
-
-<!-- ################################################################################ -->
-<!-- ########Now, let's try actually sampling from the posterior  -->
-<!-- ################################################################################ -->
-<!-- #for one gene -->
-<!-- i=1 -->
-
-<!-- #This doesn't work that well.... -->
-<!-- samplings <- imap(bestfitinits[finaltestgenes[1]],safely(function(bestfitinit,selgene_uid){ -->
-<!--   optres<-rstan::sampling(dp_model,data=get_dp_standata(selgene_uid),chains=4, -->
-<!--                           init=function(){bestfitinit},control=list(adapt_delta=.9),iter=1e3) -->
-<!-- })) -->
-<!-- samplings%<>%map('result') -->
-
-<!-- #try sampling from a model with the deviations -->
-<!-- pdevsamplings  <- sampling(dp_model_dev, -->
-<!--                            chains=4, -->
-<!--                            data=get_dp_standata(devtestgenes), -->
-<!--                            init=function(){devopt$par}, -->
-<!--                            verbose=TRUE,control=list(adapt_delta=.9),iter=400) -->
-
-<!-- #look at the n_eff for these genes -->
-<!-- summary(ribonormopt)$summary%>% -->
-<!--   {x=.;rownames(x)%>%parse_stan_pars(c('gene','time'))%>%bind_rows%>%cbind(.,x)}%>% -->
-<!--   filter(parameter%>%str_detect('pi|Ks'))%>% -->
-<!--   group_by(parameter)%>% -->
-<!--   slice(1:3)%>%as.data.frame -->
-
-<!-- #This emphatically does not help... -->
-<!-- #now plot -->
-<!-- plotfile<- here(paste0('plots/','tmp','.pdf')) -->
-<!-- pdf(plotfile) -->
-
-<!-- dev.off() -->
-<!-- normalizePath(plotfile) -->
-
-
-
-<!-- #now plot -->
-<!-- plotfile<- here(paste0('plots/','tmp','.pdf')) -->
-<!-- pdf(plotfile) -->
-<!-- gname = filter(metainfo,uprotein_id==names(samplings)[[1]])%>%.$gene_name -->
-<!-- pairplot <- mcmc_pairs(samplings[[i]],pars=vars(matches('lKs|sigma|st|pi|(prot\\[1,2\\])|(prot\\[1,3\\])|lp__')),save_gg_objects=TRUE) -->
-<!-- # str(pairplot) -->
-<!-- print(pairplot) -->
-<!-- dev.off() -->
-<!-- normalizePath(plotfile) -->
-
-
-
-
-
-<!-- ``` -->
-
-<!-- Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*. -->
-
-<!-- When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).  -->
-
-<!-- The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed. -->
+## Load the stan files
 
+```{r,loadstan,eval=T,include=T,echo=T,cache=F}
+#Model with additional normalization parameters shared between genes, for each ribo and prot timepoint
+#This one doesn't seem necessary
+dp_stanfile_ribnorm = here('src/Stan/mod_proDD_ribnorm.stan')%T>%{stopifnot(file.exists(.))}
+dp_model_ribnorm = rstan::stan_model(dp_stanfile_ribnorm)#
+
+#experimental model with deviances from the kinetic trajectory
+dp_stanfile_dev = here('src/Stan/mod_proDD_dev.stan')%T>%{stopifnot(file.exists(.))}
+dp_model_dev = rstan::stan_model(dp_stanfile_dev)#
+```
+
+
+
+The second model includes constant factors applied to the columns of the Ribo and MS matrix.
+I was suspicious these meight be required. Right now they don't seem to fit very far from zero
+but I don't know if optimizing is working well.... (An EM style approach for this might be better).
+
+The final model was an experiment, and tried to seperate the MS technical variance from the trajectories
+described in the first model. Such variances are probably of interest for clustering etc, but with the extra
+parameters I think I need to be sure that multi-gene fitting is going well. Right now the single gene model isn't
+fitting that well so I guess that problem needs to be solved first...
+
+
+```{r,toincorporate,eval=F}
+
+
+optres$hessian
+
+
+require(R.utils)
+require(rstan)
+
+
+# initvals <- optres$par%>%{.['sigma2[1]<-0.2;.}%>%stanpars_to_list
+set.seed(0)
+
+names(optres$par)%<>%str_replace_all('[,\\[\\]]','.')%>%str_replace('\\.$','')
+optres$par[colnames(optres$hessian)] - 1.96*sqrt(diag(solve(-optres$hessian)))
+optres$par[colnames(optres$hessian)] + 1.96*sqrt(diag(solve(-optres$hessian)))
+
+
+optres$hessian
+
+
+require(R.utils)
+require(rstan)
+
+################################################################################
+########Run optimization over all individual genes
+################################################################################
+selgene = satb2uid
+geneoptsfile <- here('data/geneoptfits.rds')
+file.remove(geneoptsfile)
+if(!file.exists(geneoptsfile)){
+  #
+  require('R.utils')
+  genefits <- list()
+  #
+  genefits <- mclapply(mc.cores=20,uids4stan,(function(selgene){
+    cat(paste0('.',which(uids4stan==selgene),'..'))
+    #
+    selgenefits<-lapply(rep(selgene,5),safely(function(selgene){
+      withTimeout(timeout=15,{
+        # message(selgene)
+        optdat <- get_dp_standata_withpriors(selgene)
+        optdat$lMS
+        if(sum(is.finite(optdat$lMS))<2) return(NULL)
+        #apparently we need actual hessian - Netwon succeeds for individual genes where
+        #L-BFGS does not.
+        optimizing(dp_model,data=optdat,init=initvals,algorithm='Newton',as_vector=F,hessian=TRUE)
+      })
+    }))
+    selgenefits
+  }))
+  saveRDS(genefits,file=geneoptsfile)
+}else{
+  genefits<- readRDS((file=geneoptsfile))
+}
+
+
+
+
+
+
+
+genefits%>%length
+#see how many crashed for each gene
+genefits%>%map_dbl(.%>%map('result')%>%map_lgl(is.null)%>%sum)%>%table
+#None.
+genefitsres<- genefits%>%map(.%>%map('result'))
+genefitsres%<>%setNames(uids4stan)
+
+#see how many converge
+convnums <- genefitsres%>%map_dbl(.%>%map_dbl('return_code')%>%`==`(0)%>%sum)
+genefitsres <- genefitsres[which(convnums!=0)]
+conv_uprotids <- genefitsres%>%names
+stopifnot(all(convnums==5))
+
+#get the best fit object for each gene
+bestfits <- lapply(genefitsres,function(selgenefits){
+  bestfit<-selgenefits%>%map_dbl('value')%>%which.max
+  selgenefits[[bestfit]]
+})
+#and optimized parameters
+bestfitinits <- bestfits%>%map('par')
+#name these
+bestfits%<>%setNames(conv_uprotids)
+bestfitinits%<>%setNames(conv_uprotids)
+
+diag(solve(-genefitsres[[1]][[1]]$hessian))
+
+genefitsres[[1]]%>%map('par')%>%map('l_st')
+genefitsres[[1]]%>%map('par')%>%map('l_pihalf')
+
+#All are now converging, so probably not ncessary to do this subsetting
+finaltestgenes <- conv_uprotids
+
+#now select the best opt fit and optimize again witht that
+#this should succeed without warnings
+# options(warn=1)
+# bestfitinits%>%names%>%setdiff(rownames(matchedms_mat_rscl))
+# reopts <- imap(bestfitinits,safely(function(bestfitinit,selgene_uid){
+# optres<-rstan::optimizing(dp_model,data=get_dp_standata(selgene_uid),
+# init=bestfitinit,algorithm='Newton')
+# }))
+# reopts %<>% map('result')
+# reopts%>%map('return_code')%>%`!=`(0)%>%which%>%names
+# finaltestgenes <-reopts%>%map('return_code')%>%`==`(0)%>%which%>%names
+
+##we now have the modes for each gene, let's combine these into a list of parameters for the joint model
+get_comb_initvals <- function(bestfitinits){
+  combinitvals <- lapply(names(bestfitinits[[1]])%>%setNames(.,.),function(argind){
+    bestfitinits%>%
+      map(argind)%>%
+      setNames(.,seq_along(.))%>%
+      do.call(what=partial(abind::abind,along=1))
+  })
+  combinitvals
+}
+combinitvals <- get_comb_initvals(bestfitinits)
+
+#Now what if we try to fit normalization factors for each timepoint, fitting over all
+#genes at once?
+ribonorm_combinitvals <- c(combinitvals,list('protnorm'=array(rep(0,5),dim=list(5)),'ribnorm'=array(rep(0,5),dim=list(5))))
+
+stop('Now to try optimizing norm factors over all genes')
+message(paste0('optimizing simple model on : ',length(finaltestgenes)),' genes')
+
+# LBFGS doesn't seem to work at all
+alloptres<-rstan::optimizing(dp_model,data=get_dp_standata(finaltestgenes),
+                             init=combinitvals,as_vector=F,verbose=T,algorithm='LBFGS')
+
+#now try to optimize the Ribo-seq libnorm factors as well
+set.seed(0)
+#We can fit these, but they change minimally
+ribonormopt <- optimizing(dp_model_ribnorm,
+                          data=get_dp_standata(finaltestgenes),
+                          init=ribonorm_combinitvals,
+                          as_vector=F,save_iterations=FALSE,algorithm='LBFGS',verbose=TRUE,iter=2e3,hessian=FALSE)
+
+#So - the avlues for these don't seem to be changing very much - and are converging on pretty mininiscule values
+#Which makes me think I can ignore them.
+plot(ribonormopt$par$ribnorm)
+plot(ribonormopt$par$protnorm)
+
+stop()
+
+mschangegenes <- finaltestgenes%>%interect(metainfo%>%filter(sig_MS_change))
+
+ribonormopt <- optimizing(dp_model_ribnorm,
+                          data=get_dp_standata(finaltestgenes),
+                          init=ribonorm_combinitvals,
+                          as_vector=F,algorithm='LBFGS',verbose=TRUE,iter=1,hessian=FALSE)
+
+
+ribonormopt$par$ribnorm%>%txtplot
+ribonormopt$par$protnorm%>%txtplot
+
+
+#Now let's also try our model that allows protein deviations - this will be
+#underdetermined, unless we have multiple genes in play
+finaltestgenes%>%head
+devtestgenes <- finaltestgenes%>%head(100)
+
+#Okay so this goes nuts and fits massive deviations
+devopt <- optimizing(dp_model_dev,
+                     data=get_dp_standata(devtestgenes),
+                     init=get_comb_initvals(bestfitinits[devtestgenes]),
+                     as_vector=F,algorithm='LBFGS',verbose=TRUE,iter=1e3,hessian=FALSE)
+
+# BiocManager::install(c('tidybayes'))
+protmeanvect <- allstandata$lMS[1,]%>%split(ceiling(seq_along(.)/3))%>%map_dbl(mean)
+devopt$par$p_dev[1,]
+devopt$par$p_dev[1,]
+
+#so the deviancem model fits better
+sum(abs(devopt$par$prot[1,] - protmeanvect))
+sum(abs(optres$par$prot[1,] - protmeanvect))
+
+#Okay but surely those deviances effect protein a LOT
+teval <- optimizing(dp_model_dev,
+                    data=get_dp_standata(devtestgenes),
+                    init=devopt$par%>%{.$p_dev[,] <- 0; . },
+                    as_vector=F,algorithm='LBFGS',verbose=TRUE,iter=50e3,hessian=FALSE)
+
+teval$par$prot[1,]
+alloptres$par$prot[1,]
+teval$par$p_dev[1,]
+
+################################################################################
+########Now, let's try actually sampling from the posterior
+################################################################################
+#for one gene
+i=1
+
+#This doesn't work that well....
+samplings <- imap(bestfitinits[finaltestgenes[1]],safely(function(bestfitinit,selgene_uid){
+  optres<-rstan::sampling(dp_model,data=get_dp_standata(selgene_uid),chains=4,
+                          init=function(){bestfitinit},control=list(adapt_delta=.9),iter=1e3)
+}))
+samplings%<>%map('result')
+
+#try sampling from a model with the deviations
+pdevsamplings  <- sampling(dp_model_dev,
+                           chains=4,
+                           data=get_dp_standata(devtestgenes),
+                           init=function(){devopt$par},
+                           verbose=TRUE,control=list(adapt_delta=.9),iter=400)
+
+#look at the n_eff for these genes
+summary(ribonormopt)$summary%>%
+  {x=.;rownames(x)%>%parse_stan_pars(c('gene','time'))%>%bind_rows%>%cbind(.,x)}%>%
+  filter(parameter%>%str_detect('pi|Ks'))%>%
+  group_by(parameter)%>%
+  slice(1:3)%>%as.data.frame
+
+#This emphatically does not help...
+#now plot
+plotfile<- here(paste0('plots/','tmp','.pdf'))
+pdf(plotfile)
+
+dev.off()
+normalizePath(plotfile)
+
+
+
+#now plot
+plotfile<- here(paste0('plots/','tmp','.pdf'))
+pdf(plotfile)
+gname = filter(metainfo,uprotein_id==names(samplings)[[1]])%>%.$gene_name
+pairplot <- mcmc_pairs(samplings[[i]],pars=vars(matches('lKs|sigma|st|pi|(prot\\[1,2\\])|(prot\\[1,3\\])|lp__')),save_gg_objects=TRUE)
+# str(pairplot)
+print(pairplot)
+dev.off()
+normalizePath(plotfile)
+
+
+
+
+
+```

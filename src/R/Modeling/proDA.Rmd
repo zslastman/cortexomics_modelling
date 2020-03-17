@@ -1,0 +1,337 @@
+---
+title: "proDA Notebook"
+output: 
+  html_notebook: 
+    toc:True
+---
+
+Okay so [proDA](https://github.com/const-ae/proDA) now exists - linear modeling framework for proteoimcs that incorporates drop-out estimation.
+
+1. I should perhaps redo the linear modeling for fig 1,2
+2. I should probably use their closed form resultings in my own work.
+
+Modify their repo to do the non linear opt for me?
+
+Use the mvnorm approximation their library gives me?
+  - I can simply get the betas as an mvnorm from their program.
+  - given a seq assay data set, a set of synthesis coefficients, 
+  - is this really any different from my approach?
+  - I think so because of speed? I can get the likelihood of pihalf very quickly that way....
+  - If I ignore uncertainty in the seq, I can pretty quickly get the max val for each gene I think....
+  
+
+```{r}
+if(!('proDA'%in%installed.packages())) devtools::install_git('https://github.com/const-ae/proDA')
+library(proDA)
+library(here)
+library(tidyverse)
+
+source(here::here('src/R/Functions/rstan_functions.R'))
+
+
+#this is the ms data
+matchedms_mat <- (readRDS)(here('data/matched_ms_mat.rds'))
+#this is the count data
+ribomat <- (readRDS)(here('data/ribomat.rds'))
+#this contains the variance of the log count data
+ribo_sigma <- (readRDS)(here('data/ribo_sigma.rds'))
+#load the metadata on all our genes and the many IDs involved
+metainfo<-suppressMessages({read_tsv(here('data/metainfo.tsv'))})
+#Pull out the gene names we want to analyze
+uids4stan <- metainfo%>%
+  filter(isbest)%>%#these are thee final pairs of gene/cds/mass spec ids that we use for modeling MS
+  filter(sig_MS_change)%>%
+  filter(n_stagemissing<=2)%>%#now filter them further - those with too many missing values will crash Rstan
+  .$uprotein_id
+best_uprotein_ids <- uids4stan
+#
+best_ms_ids <- metainfo%>%{.$ms_id[match(best_uprotein_ids,.$uprotein_id)]}
+#and of the ribo data
+best_protein_ids <- metainfo%>%{.$protein_id[match(best_uprotein_ids,.$uprotein_id)]}
+
+#Make sure these interesting genes come first
+testgenes <- metainfo%>%filter(gene_name%in%c('Flna','Satb2'))%>%filter(isbest)%>%.$uprotein_id%>%unique
+uids4stan <- union(testgenes,uids4stan)
+
+#
+
+
+
+```
+
+```{r}
+normalized_abundance_matrix <- matchedms_mat[best_ms_ids,]%>%median_normalization
+da <- dist_approx(normalized_abundance_matrix)
+
+```
+
+```{r}
+# This chunk only works if pheatmap is installed
+# install.packages("pheatmap")
+sel <- c(1:15)# CG6618
+
+plot_mat <- as.matrix(da$mean)[sel, sel]
+# Remove diagonal elements, so that the colorscale is not distorted
+plot_mat[diag(9) == 1] <- NA
+# 95% conf interval is approx `sd * 1.96`
+uncertainty <- matrix(paste0(" ± ",round(as.matrix(da$sd * 1.96)[sel, sel], 1)), nrow=15)
+
+pheatmap::pheatmap(plot_mat, 
+                   cluster_rows = FALSE, cluster_cols = FALSE,
+                   display_numbers= uncertainty,
+                   number_color = "black")
+
+
+```
+```{r}
+# The best way to create this data.frame depends on the column naming scheme
+sample_info_df <- data.frame(name = colnames(normalized_abundance_matrix),
+                             stringsAsFactors = FALSE)
+sample_info_df$condition <- sample_info_df$name%>%str_extract('[^_]+')
+
+ribomat%>%tibble%>%head
+
+sample_info_df%<>%group_by(condition)%>%mutate(replicate=1:n())
+
+fit <- proDA(normalized_abundance_matrix, design = ~ condition, 
+             col_data = sample_info_df, reference_level = "E13")
+
+test_res <- test_diff(fit, "conditionP0")
+
+pdf('tmp.pdf')
+genes2plot  = ((test_res$diff2) & test_res$adj_pval<0.05 )
+pheatmap::pheatmap(dist_approx(fit[,], by_sample = FALSE)$mean)
+dev.off()
+```
+
+That matrix is the uncertainty in our protein levels, summarised into a mvnorm distribution (in the proDA paper they do mention that this approximation is adjusted so it fits the right of the distribution better than the left to avoid loss of power.... I will ignore that, for now.)
+
+The multivariate normal density is just 1/() exp( - 0.5(x-mu)' inv(V)' (x - mu)]
+
+So if we ignore uncerainty in the seq assay, we can just calculate the prot trajectory and get the likelihood of it as above.
+
+Adding a constant to the prot trajectory and the ribo trajectory would be pretty trivial then...
+
+```{r}
+
+#more interestingly though, I can get the coefficient variancematrices:
+proDA::coefficient_variance_matrices(fit)%>%head(1)
+
+
+```
+
+## Modeling with proDAs sigmas
+
+```{stan, output.var = 'proDAsigmastan'}
+data {
+  int nsamples;// number of samples
+  int nribosamples;// number of samples
+  int G;// number of proteins
+  int T;// info on the number of conditions
+  int totalmissing;// info on th total amount of missing data
+  matrix[G,T] lMSmu;
+  matrix[G,T] lSeqmu;
+  matrix[G,T] lMSsigma[T];
+  matrix[G ,T] lSeqsigma[T];
+  matrix[T ,T+1] mybs; // spline basis for the protein trajectory
+  matrix[T,T] mydbs; // differentiated spline basis for the RNA (piecewise linear right now)
+  real l_st_priorsd;
+  real l_ribo_priorsd;
+  real l_ribo_priornu;
+  real l_pihalf_priormu;
+  real l_pihalf_priorsd;
+}
+
+parameters {
+  vector<lower=-10,upper=10>[G] l_st; // the ratio of steady state ratio to ribo
+  matrix<lower=-10,upper=10>[G,T] lsynths;  // log vector of fold changes due to synthesis
+  vector<lower=-20,upper=20>[G] l_pihalf;  //log half life
+  vector[G] prot0; // initial LOG amount of protein
+}
+
+transformed parameters{
+    matrix [G,T] prot; // amounts of protein
+    matrix [G,T] seq; // amounts of mRNA
+    vector[G] Kd; // the degred
+    vector[G] lKd; // the log degrad
+    vector[G] lKs; // the (log) synthesis constant
+    matrix [G,T] synth; // vector of fold changes due to synthesis
+    matrix [G,T] fcs; // vector of fold changes due to synthesis
+
+    //get Kd
+    lKd = log2(log(2)) -  l_pihalf;
+    Kd = exp(log(2)*lKd);
+    
+    //get Ks
+    lKs = l_st -  lKd;
+
+    //get the fold changes due to synthesis (which must be positive)
+    synth = exp(log(2)*lsynths);
+    
+    fcs = synth - rep_matrix( Kd,T);
+    
+    prot = append_col(prot0, fcs ) * (mybs)'; // get the full protein trajectory
+
+    seq = prot + log2(synth * (mydbs)' ) - rep_matrix(lKs,T); // get the mRNA trajectory this implies
+
+}
+
+model {
+  // this needs to become steady state I think
+  // for(c in 1:ncond){
+    // l_st[,c] ~ normal(mu0, sqrt(sigma20));
+
+  l_st ~ normal(0,l_st_priorsd);
+  l_pihalf ~ normal(l_pihalf_priormu,l_pihalf_priorsd);
+  
+  for(t in 1:T){
+    lsynths[,t] ~ student_t(l_ribo_priornu,0,l_ribo_priorsd);
+  }// put a prior on fold changes
+
+  for(g in 1:G){
+  
+    seq[g,] ~ multi_normal(lSeqmu[g,],lSeqsigma[g]);
+
+    -log(abs(synth))
+    
+    prot[g,] ~ multi_normal(lMSmu[g,],lMSsigma[g]);
+    
+  }
+  
+}
+
+```
+
+So the above model has the major problem that it's sampling a transformed parameter, reversing this is kind of a nightmare.
+
+I do think I need to seperate the techical and biological variance though....
+
+Supposing I first determine the course, then use lMSu to determine the deviation. Then I set a prior of zero on the deviations, so the model tries to minimize them.
+
+
+
+## Modeling with proDAs sigmas
+
+```{stan, output.var = 'proDAsigmastan'}
+data {
+  int G;// number of proteins
+  int T;// info on the number of conditions
+  matrix[G,T] lMSmu;
+  matrix[G,T] lSeqmu;
+  matrix[G,T] lMSsigma[T];
+  matrix[G ,T] lSeqsigma[T];
+  matrix[T ,T+1] mybs; // spline basis for the protein trajectory
+  matrix[T,T] mydbs; // differentiated spline basis for the RNA (piecewise linear right now)
+  real l_st_priorsd;
+  real l_ribo_priorsd;
+  real l_ribo_priornu;
+  real l_pihalf_priormu;
+  real l_pihalf_priorsd;
+}
+
+parameters {
+  vector<lower=-10,upper=10>[G] l_st; // the ratio of steady state ratio to ribo
+  matrix<lower=-10,upper=10>[G,T] lsynths;  // log vector of fold changes due to synthesis
+  vector<lower=-20,upper=20>[G] l_pihalf;  //log half life
+  vector[G] prot0; // initial LOG amount of protein
+}
+
+transformed parameters{
+    matrix [G,T] prot; // amounts of protein
+    matrix [G,T] seq; // amounts of mRNA
+    vector[G] Kd; // the degred
+    vector[G] lKd; // the log degrad
+    vector[G] lKs; // the (log) synthesis constant
+    matrix [G,T] synth; // vector of fold changes due to synthesis
+    matrix [G,T] fcs; // vector of fold changes due to synthesis
+
+    //get Kd
+    lKd = log2(log(2)) -  l_pihalf;
+    Kd = exp(log(2)*lKd);
+    
+    //get Ks
+    lKs = l_st -  lKd;
+
+    //get the fold changes due to synthesis (which must be positive)
+    synth = exp(log(2)*lsynths);
+    
+    fcs = synth - rep_matrix( Kd,T);
+    
+    prot = append_col(prot0, fcs ) * (mybs)'; // get the full protein trajectory
+
+    seq = prot + log2(synth * (mydbs)' ) - rep_matrix(lKs,T); // get the mRNA trajectory this implies
+    
+    
+    protdevs = lMSmu - prot;
+  
+}
+
+model {
+  // this needs to become steady state I think
+  // for(c in 1:ncond){
+    // l_st[,c] ~ normal(mu0, sqrt(sigma20));
+
+  l_st ~ normal(0,l_st_priorsd);
+  l_pihalf ~ normal(l_pihalf_priormu,l_pihalf_priorsd);
+  
+  #for(t in 1:T){
+  #  lsynths[,t] ~ student_t(l_ribo_priornu,0,l_ribo_priorsd);
+  #}// put a prior on fold changes
+
+  for(g in 1:G){
+  
+    prot[g,] ~ multi_normal(lSeqmu[g,],lSeqsigma[g]);
+    #So prot is linear in prot0 exp (2) in Kd - ask wolfram alpha
+    #log(abs( { differentiate  - 2^k } ))  gives us k* log (2) log+log(log(2)))
+    target += l_pihalf * log (2); #leave out constant term, 
+    target += lsynths * log (2); #leave out constant term, 
+    #
+      
+    #so then seq gets all the same jacobian corrections, nothing for lKS (linear)
+    seq[g,] ~ multi_normal(lSeqmu[g,],lSeqsigma[g]);
+    target += l_pihalf * log (2); #leave out constant term, 
+    target += lsynths * log (2); #leave out constant term, 
+    #And nothing for the original log term:  log(abs( { differentiate log2( 2^(s) * b } )) 
+  }
+  
+}
+
+```
+
+
+So with a little wolfram alpha, this turns out to be okay, since most of the parameter transformations are linear.
+
+This is still the exponential parametrization. The linear one might be tricker...
+
+
+```{r}
+
+Kd = 3
+synths = c(3,3,10,0.1,0.1)
+prot0 = 10
+lKs = 0
+
+prot = sampdata$mybs %*% c(prot0,synths - Kd)
+ribo = prot + log2(sampdata$mydbs %*% c(synths)) - lKs
+
+# 
+# sampdata$lMS[] = rep(prot,each=3)+rnorm(15,sd=0.01)
+# sampdata$lribo[] = rep(ribo,each=2)+rnorm(10,sd=0.01)
+time = 1:5
+timeknots <- time[c(-1,-length(time))]
+mybs <- cbind(1,ibs(time, knots = timeknots,degree = 1, intercept = TRUE))
+mydbs = bs(time, knots = timeknots,degree = 1, intercept = TRUE)
+  
+          
+prot + log2(mydbs %*% (synths)) - lKs
+
+prot + log2(mydbs %*% (fcs + Kd)) - lKs
+
+fcs <-function(prot) solve(mybs[,-1])(mydbs %*% prot - prot[1])
+  
+prot + log2(mydbs %*% ((fcs(prot)) + Kd)) - lKs
+
+
+
+```
+

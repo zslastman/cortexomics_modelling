@@ -58,6 +58,10 @@ transformed parameters{
 
     mRNA = prot + log2(synth * (mydbs)' ) - rep_matrix(lKs,T); // get the mRNA trajectory this implies
 
+
+  
+
+
   {
     int counter = 1;
     for(i in 1:G){
