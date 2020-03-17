@@ -34,67 +34,69 @@ log(P(t)) = log ( exp (l_synth_FC - Kd) + const)
 
 P` = R Ks - P Kd
 => P (log(P))` = RKs - P Kd
-=> log(P)` = RKs/P - Kd
+=> log(P)` = R Ks / P - Kd
 log(P)`
 so Kd is a log fold change
 
-
-cM = c(10,20); Kd = 20;
-cM - Kd
-log(cM)
-log(Kd)
-exp(logMinusExp(log(cM),log(Kd)))
-
 #for ref
 log(P(t)) = log ( exp (l_synth_FC - Kd) + const)
+
+
+
 
 log(R(t)) = log(P(t)) + log(dlP(t) + Kd) - log(Ks)
 log(R(t)) = log(P(t)) + log(l_synth_FC(t)) - log(Ks)
 
 #If we multiply my bs by the instantenous rates of change at the tps (the left vector)
 #appending a start point, we get sensible vals on the right
+#
 m = matrix(c(10,20,20,-10,-10,-10),ncol=1)
 #(mybs %*% m)%>%dput
 Pt = structure(c(10, 30, 35, 25, 15), .Dim = c(5L, 1L))
 fcs <- m[-1]/Pt
 #Now we generate some param values that work
 Kd = 0.70
+
 lsynths = fcs + Kd
+
 prot0=m[1]
 
 #so given that I had Kd an dlsynth I couul dget the fold change at each point...
-newfcs <- lsynths - Kd
+fcs <- lsynths - Kd
 
 #now do a little math
 #so the quantities we can calculuate
 
-newfcs = m[-1] Pt
+fcs = m[-1] Pt
 
-newfcs = m[-1]/(mybs %*% m )
+fcs = m[-1]/(mybs %*% m )
 
-newfcs = m[-1] / (prot0 + (mybs[-1] %*% m[-1]))
+fcs = m[-1] / (prot0 + (mybs[-1] %*% m[-1]))
 
-(prot0 + (mybs[-1] %*% m[-1])) * newfcs = m[-1]
+(prot0 + (mybs[-1] %*% m[-1])) * fcs = m[-1]
 
-prot0 * newfcs + newfcs * (mybs[-1] %*% m[-1]))  = m[-1]
+prot0 * fcs + fcs * (mybs[-1] %*% m[-1]))  = m[-1]
 
-prot0 * newfcs + newfcs * (mybs[-1] %*% m[-1])  = m[-1]
+prot0 * fcs + fcs * (mybs[-1] %*% m[-1])  = m[-1]
 
-prot0 * newfcs + newfcs * (mybs[-1] %*% m[-1])  = m[-1]
+prot0 * fcs + fcs * (mybs[-1] %*% m[-1])  = m[-1]
 
-prot0 * newfcs  = m[-1] - newfcs * (mybs[-1] %*% m[-1]) 
+prot0 * fcs  = m[-1] - fcs * (mybs[-1] %*% m[-1]) 
 
-prot0 * newfcs = (I - diag(newfcs) mybss) %*% m[-1] 
+prot0 * fcs = (I - diag(fcs) mybss) %*% m[-1] 
 
-prot0 * newfcs = (I - diag(newfcs) mybss) %*% m[-1] 
+prot0 * fcs = (I - diag(fcs) mybss) %*% m[-1] 
 
-prot0 * newfcs = (I - diag(newfcs) mybss) %*% m[-1] 
+prot0 * fcs = (I - diag(fcs) mybss) %*% m[-1] 
 
- (I - diag(newfcs) mybss)^-1 %*%  prot0 * newfcs = m[-1] 
+(I - diag(fcs) mybss)^-1 %*%  prot0 * fcs = m[-1] 
 
-newfcs = lsynths - Kd
+fcs = lsynths - Kd
 
-solve(diag(rep(1,5)) - diag(newfcs[,1]) %*% mybs[,-1]) %*%  prot0 * newfcs
+solve(diag(rep(1,5)) - diag(fcs[,1]) %*% mybs[,-1]) %*%  prot0 * fcs
+
+
+
 
 
 #########################
@@ -102,18 +104,44 @@ solve(diag(rep(1,5)) - diag(newfcs[,1]) %*% mybs[,-1]) %*%  prot0 * newfcs
 #########################
 
 ##!!!!
-mym = solve(diag(rep(1,5)) - diag(newfcs[,1]) %*% mybs[,-1]) %*%  (prot0 * newfcs)
+mym = solve(diag(rep(1,5)) - diag(fcs[,1]) %*% mybs[,-1]) %*%  (prot0 * fcs)
+
 stopifnot(mybs %*% c(prot0,mym) == Pt
 correctinv = solve(diag(rep(1,5)) - diag(newfcs[,1]) %*% mybs[,-1])
+prot0 = m[1]
+
+(prot0 * fcs)
+
 #!!!!
 #
 
+#Now unclear what all the above means
 
+# heres the basic relationship
+P` = R Ks - P Kd
+dbs %*% mp = dbs Ks - P Kd
+dbs %*% mp = dbs %*% mr *  Ks - P Kd
+#Now asusm dbs is I, and bs has no intercept column so we need prot 0   
+mp = mr * Ks - (prot0 +  bs mp) Kd
+mr * Ks = mp + Kd (prot0 +  bs mp)
+mr * Ks = mp + Kd prot0 + bs mp
+mr * Ks - Kd prot0 = mp + bs mp
+
+mr * Ks - Kd prot0 = (I + bs ) mp
+
+#sso to get mp
+(I + bs )^-1 ( mr * Ks - Kd prot0) = mp
+
+mr = (Kd prot0 + (I+bs) mp )/ Ks
 
 
 ```
 
-so the above is an acceptable solution.It might have a more effient solution though. 
+so the above is an acceptable solution. The problem is, it doesn't have a clean determinant (from mr to mp)
+
+What if I was to fix ribo0?
+
+
 
 
 ```{r test terms}

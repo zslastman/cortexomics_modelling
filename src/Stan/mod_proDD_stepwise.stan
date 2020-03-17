@@ -45,7 +45,10 @@ transformed parameters{
     for(i in 2:T){
       #prot[1] = prot[i-1]*exp(-Kd *t) - (s1 / Kd^2) + ( (s1 *t) / Kd) + (s0/Kd)
       #prot[1] = prot[i-1]*exp(-Kd) - (s1 / Kd^2) + ( (s1) / Kd) + (s0/Kd)#eliminate T
-      log(prot[1]) = log(prot[i-1]*exp(-Kd) - (s1 / Kd^2) +  (s1 / Kd) + (s0/Kd)#eliminate T
+      log(prot[1]) = log(prot[i-1]*exp(-Kd) - (s1 / Kd^2) +  (s1 / Kd) + (s0/Kd) )#eliminate T
+      #or in terms of timeopints
+      log(prot[1]) = log(prot[i-1])*exp(-Kd) + (snew/Kd) - ( snew - sold / Kd^2)   #eliminate T
+      
       #we can break this into two pieces for logsumExp
       log(prot[i-1]*exp(-Kd))#which becomes
       log(prot[i-1]) -Kd
@@ -54,6 +57,11 @@ transformed parameters{
       
       
     }
+
+
+
+
+
     
     prot[i] = log_sum_exp(
       prot[i-1]-lKd, #The amount left under degredation
