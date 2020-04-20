@@ -1,0 +1,25 @@
+---
+title: "Bulk Translation effects"
+output: html_notebook
+---
+
+So, we want to look at what the predicted effect of cell type heterogenity and varying global translation rates will be in bulk RNAseq vs Ribo-seq data.
+
+To do this we will
+
+1) Take the Telley single cell RNAseq
+2) Take the Summarising dimensions that Telley provide for each cell (time,diff)
+3) Assume a simple variation in translation rate that's linearly proportional to Stemness (to begin with, ignoring diff)
+4) Simulate single cell Ribo-seq using Telleys expression matrix, and these assumed global translation rates
+5) Feed this into Xtail
+6) Check to see what the resulting pattern of identified deltaTE is
+7) ADDITIONALLY, add in gene specific TE regulation that exaggerates cell type specificity, see what the resulting effects are.
+
+```{r}
+
+```
+
+```{r}
+
+
+```

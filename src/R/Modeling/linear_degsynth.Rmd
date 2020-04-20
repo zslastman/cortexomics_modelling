@@ -2,15 +2,19 @@
 title: "linear deg/synth"
 output: html_notebook
 ---
+```{r}
+# source(here::here('src/R/Rprofile.R'))
+library(tidyverse)
+```
 
 
-```{r test terms}
-If we start parametrizing with dlP(t) + Kd, then we have gotten a 
+```
+# If we start parametrizing with dlP(t) + Kd, then we have gotten a 
 logMinusExp<-function(ln_a,ln_b){
    log(exp(ln_a - ln_b) - 1) + ln_b
 }
 
-since f` = f (ln f)` and f` = f`/f, and f` is an instantaneous fold changedFiles()
+# since f` = f (ln f)` and f` = f`/f, and f` is an instantaneous fold changedFiles()
 suppose the slope of ln2(f`) is one, then it it's doublng at a certain rate. Then 
 
 so given that we have dlP(t)+Kd how to get P(t)?
@@ -104,6 +108,7 @@ solve(diag(rep(1,5)) - diag(fcs[,1]) %*% mybs[,-1]) %*%  prot0 * fcs
 #########################
 
 ##!!!!
+
 mym = solve(diag(rep(1,5)) - diag(fcs[,1]) %*% mybs[,-1]) %*%  (prot0 * fcs)
 
 stopifnot(mybs %*% c(prot0,mym) == Pt
@@ -131,8 +136,24 @@ mr * Ks - Kd prot0 = (I + bs ) mp
 
 #sso to get mp
 (I + bs )^-1 ( mr * Ks - Kd prot0) = mp
-
 mr = (Kd prot0 + (I+bs) mp )/ Ks
+
+
+Ks = 10
+Kd = 0.5
+prot0 = 1000
+mr = c(20,20,20,20,20,20,20,200,20,20,20,20,20,20,20,20)
+time = 1:length(mr)
+library(splines)
+library(splines2)
+timeknots <- time[c(-1,-length(time))]
+bs <- cbind(1,ibs(time, knots = timeknots,degree = 1, intercept = TRUE))
+dbs = bs(time, knots = timeknots,degree = 1, intercept = TRUE)
+I = diag(1,ncol=length(mr),nrow=length(mr))
+
+
+
+
 
 
 ```
@@ -144,9 +165,9 @@ What if I was to fix ribo0?
 
 
 
-```{r test terms}
+```{}
 #THIS WORKS!
-OKay so... 
+# OKay so... 
 ####Lets try to solve more efficiently
 I = diag(rep(1,5))
 A = I
@@ -328,75 +349,360 @@ If we put this into wolfram:
 
 
 ```{r}
+# for(i in 2:length(ribo)){
+# 
+#       P[i] = stepsynthdeg(d_0=d_0,T=1,R = 2, s_0 = ribo[i-1],s_1 =  ribo[i] -  ribo[i-1],P_0 = P[i-1])
+# 
+# }
 
-e = exp(1)
-d_0 = 0.1
-T=1
-R=1
-s_0 = 20
-s_1 = 0
-P_0 = 100
-T=4
+#Try putting this into wolfram alpha, and look at the expanded form.
+# exp(  - d_0  T  )  * (P0 +   Integrate [  ( s_0 + (s_1 - s_0) t)  * exp( d_0 (t) )  dt , from 0 to T ] )
+#NOt that this is with the two timepoints, not hte slope
+#Now do that for T=1
+## exp(  - d_0  T  )  * (P0 +   Integrate [  ( s_0 + (s_1 - s_0) t)  * exp( d_0 (t) )  dt , from 0 to T ] )
 
-library(tidyverse)
 
-lapply(1:100,function(T){
-  e^(d_0*(-T))*((R*(d_0*s_0*(e^(d_0*T) - 1) + s_1*(e^(d_0*T)*(d_0*T - 1) + 1)))/d_0^2 + P_0)
-})%>%unlist%>%plot(ylim = c(0,max(.)))
-stepsynthdeg = function(e = exp(1),
-d_0 = 0.1,
-T=1,
-R=1,
-s_0 = 20,
-s_1 = 0,
-P_0 = 100){
-  e^(d_0*(-T))*((R*(d_0*s_0*(e^(d_0*T) - 1) + s_1*(e^(d_0*T)*(d_0*T - 1) + 1)))/d_0^2 + P_0)
+stepsynthdeg <- function(P_0,d_0,s_0,s_1,Ks=1,T=1){
+      # exp = function(x){exp(log(2)*x)}
+      s_0 = s_0 * Ks
+      s_1 = s_1 * Ks
+      P_0 * exp(-d_0) - exp(-d_0)*s_0*d_0^-1 - exp(-d_0)*s_0*d_0^-2  +  s_0*d_0^-2  +  s_1*d_0^-1  +  exp(-d_0)*s_1*(d_0^-2)  -  s_1*(d_0^-2)
 }
 
-Ks=1
-d_0 = 0.6
-ribo = c(10,10,10,10,100,100,30,30,30,30,30,30)
-P = rep(0,length(ribo))
-P[1] = 10*ribo[1]*R * (1/d_0)
+#really don't undersatnd why this behaves so oddly
+
+d_0 = 0.6;
+Ks = 40;
+ribo= c(10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 100, 100, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30);
+P = rep(NA,length(ribo))
+P[1] = 3* (ribo[1] * Ks)
+
 for(i in 2:length(ribo)){
-    #if(i==7)stop()
-    P[i] = stepsynthdeg(d_0=d_0,T=1,R = 2, s_0 = ribo[i-1],s_1 =  ribo[i] -  ribo[i-1],P_0 = P[i-1])
+      P[i] = stepsynthdeg(d_0=d_0,Ks=Ks,T=1, s_0 = ribo[i-1],s_1 =  ribo[i],P_0 = P[i-1])
 }
-i=8
-par(mfrow=(c(2,1)))
+
+last(P) / last(ribo)
+
+
+par(mfrow=(c(1,2)))
 plot(ribo)
 plot(P)
-#
-#e^(d_0*(-T)) ((R*(d_0*s_0*(e^(d_0*T) - 1) + s_1*(e^(d_0*T) (d_0*T - 1) + 1)))/d_0^2 + P_0)
-
-
 ```
-
-
-So this works the way we want it to. Can we use it?
-
-first let's eliminate T
-
-e^(-d_0) ((R ((e^(d_0) - 1) d_0 s_0 + (e^(d_0) (d_0 - 1) + 1) s_1))/d_0^2 + P_0)
-
-#split it up a bit
-(exp ( -d) * P0) + R * (exp(-d_0)(  (((exp(d) - 1)*d*s_0)/d^2)      +  (exp(d)*(d-1)+1)*s_1)/d^2 )
-
-#now let's apply log and logsumexp
-log ( (exp ( -d) * P0) + R * (exp(-d_0)(  (((exp(d) - 1)*d*s_0)/d^2)      +  (exp(d)*(d-1)+1)*s_1)/d^2 ))
-#oh and make R Ks
-= logSumExp( log(exp(-d)*P0), log(Ks) +  log((exp(-d_0))) + ((((exp(d) - 1)*d*s_0)/d^2)      +  (exp(d)*(d-1)+1)*s_1)/d^2 ) ) )
-
-aaactualyl, let's do this in terms of time stages rather than slope
-t wolfram
- log ( exp(  - d_0   )  * ( P_0 + Integrate [ R (s_0 + (s_1 - s_0)  t ) * exp(  d_0 (t) )  dt , from 0 to 1 ] ))
-#Split previous and new 
-LogSumExp(
-  log(e^(-d_0)* P0 )),#the easy part
-  exp(-d) ((R (-(d + 1) s_0 + e^(d_0) ((d - 1) s_1 + s_0) + s_1))/d_0^2))
 
 
 ```{r}
+#So that works, now can we do this in log space plz
+
+#https://www.mathworks.com/matlabcentral/fileexchange/25273-methods-for-calculating-precise-logarithm-of-a-sum-and-subtraction
+# 
+# #to start with the above working expression.
+# P_0 * exp(-d_0) - exp(-d_0)*s_0*d_0^-1 - exp(-d_0)*s_0*d_0^-2  +  s_0*d_0^-2  +  s_1*d_0^-1  +  exp(-d_0)*s_1*(d_0^-2)  -  s_1*(d_0^-2)
+# 
+# #Now let's put all the minuses on the right
+# P_0 * exp(-d_0)  +  s_0*d_0^-2  +  s_1*d_0^-1  +  exp(-d_0)*s_1*(d_0^-2)  -  s_1*(d_0^-2) - exp(-d_0)*s_0*d_0^-1 - exp(-d_0)*s_0*d_0^-2
+# 
+# P_0 * exp(-d_0)  +  s_0*d_0^-2  +  s_1*d_0^-1  +  exp(-d_0)*s_1*(d_0^-2)  -  s_1*(d_0^-2) - exp(-d_0)*s_0*d_0^-1 - exp(-d_0)*s_0*d_0^-2
+
+#Now supposing we want P_0, d_0, s_1 and s_0, to all be log 
+# 
+# #get this into logsum oand logsum minus
+# logSumMinus(
+#   logSum(P_0 * exp(-d_0)  ,  s_0*d_0^-2  ,  s_1*d_0^-1  ,  exp(-d_0)*s_1*(d_0^-2) ) ,
+#   logSum(s_1*(d_0^-2) , exp(-d_0)*s_0*d_0^-1 , exp(-d_0)*s_0*d_0^-2)
+# )
+# 
+# #and convert the multiplications to additions (and the exponentiations to multiplications)
+# logSumMinus(
+#   logSum(log(P_0) + log(exp(-d_0))  ,  log(s_0)+ log(d_0^-2)  ,  log(s_1)+log(d_0^-1)  ,log(exp(-d_0))+log(s_1)+log((d_0^-2)) ) ,
+#   logSum(log(s_1)+log((d_0^-2)) , log(exp(-d_0))+log(s_0)+log(d_0^-1) , log(exp(-d_0))+log(s_0)+log(d_0^-2))
+# )
+# 
+# library(matrixStats)
+# logSumExp
+# logSumMinus = function(a,b) log(exp(a - b) -1 )+b
+#  
+# logSumMinus(
+#    logSumExp(c(log(P_0) + log(exp(-d_0))  ,  log(s_0)+ log(d_0^-2)  ,  log(s_1)+log(d_0^-1)  ,log(exp(-d_0))+log(s_1)+log((d_0^-2)) ) ),
+#    logSumExp(c(log(s_1)+log((d_0^-2)) , log(exp(-d_0))+log(s_0)+log(d_0^-1) , log(exp(-d_0))+log(s_0)+log(d_0^-2)))
+# )
+# 
+# #this works, now without multiplications and exponentiations
+# lP_0 = log(P_0)
+# ls_0 = log(s_0)
+# ls_1 = log(s_1)
+# dl = log(d_0)
+# 
+# logSumMinus(
+#   logSumExp(c(lP_0 - exp(dl)  ,  ls_0 -2 *dl  ,  ls_1-dl  ,-exp(dl)+ls_1-2*dl )),
+#   logSumExp(c(ls_1-2*dl , -exp(dl)+ls_0-dl , -exp(dl)+ls_0-2*dl))
+# )
+
+log_minus_exp <- function(a,b) {
+    log(exp(a - b) -1 )+ b;
+}
+log_sum_exp <- function( a, b){
+   log(exp(a - b) + 1) + b;
+}
+
+stepsynthdeg_log <- function(P_0,d_0,s_0,s_1,Ks=1,T=1){
+
+    lP_0 = log(P_0)
+    ls_0 = log(s_0) + log(Ks)
+    ls_1 = log(s_1) + log(Ks)
+    lKd = log(d_0)
+    
+    # 
+    # dl = log(d_0) 
+    # 
+    # lP_1 = logSumMinus(
+    #   logSumExp(c(lP_0 - exp(dl)  ,  ls_0 -2 *dl  ,  ls_1-dl  ,-exp(dl)+ls_1-2*dl )),
+    #   logSumExp(c(ls_1-2*dl , -exp(dl)+ls_0-dl , -exp(dl)+ls_0-2*dl))
+    # )
+    # 
+    # exp(lP_1)
+    prot = array(c(lP_0,NA),c(1,2))
+    lribo =  array(c(ls_0,ls_1),c(1,2))
+    
+    i = 2
+    #Why does this code look like this? So I can copy paste it into stan of course!
+      prot[,i] = prot[,i-1] - exp(lKd);
+      prot[,i] = log_sum_exp(prot[,i], lribo[,i]-lKd);
+      prot[,i] = log_sum_exp(prot[,i],-exp(lKd)+lribo[,i]-2*lKd );
+    
+      prot[,i] = log_sum_exp(prot[,i], lribo[,i-1]-lKd);
+      prot[,i] = log_sum_exp(prot[,i],lribo[,i-1] -2 *lKd );
+      prot[,i] = log_minus_exp(prot[,i],lribo[,i]-2*lKd );#9
+      prot[,i] = log_minus_exp(prot[,i],-exp(lKd)+lribo[,i-1] - lKd );#2
+      prot[,i] = log_minus_exp(prot[,i],lribo[,i-1] - lKd );#3
+      prot[,i] = log_minus_exp(prot[,i],-exp(lKd)+lribo[,i-1] - 2*lKd );#4
+  
+        exp(prot[,2])
+}
+
+#So then, can we re-write the above working function in such a way that it 
+Pe = rep(NA,length(ribo))
+Pe[1] = P[1]
+for(i in 2:length(ribo)){
+      Pe[i] = stepsynthdeg_log(d_0=d_0,Ks=Ks,T=1, s_0 = ribo[i-1],s_1 =  ribo[i],P_0 = Pe[i-1])
+}
+
+
+
+plot(P,Pe)
 
 ```
+
+
+So that code works - are we replicating it in stan? 
+
+
+```{stan, verbose = TRUE,output.var = 'proDAsigmastan2'}
+
+functions {
+  vector log_minus_exp(vector a, vector b) {
+   return log(exp(a - b) -1 )+ b;
+  }
+  vector log_sum_exp(vector a, vector b){
+  return log(exp(a - b) + 1) + b;
+  }
+
+}
+
+
+data {
+  int G;// number of proteins
+  int T;// info on the number of conditions
+  matrix[G,T] lMSmu;
+  matrix[G,T] lSeqmu;
+  matrix[T,T] lMSsigma[G];
+  matrix[T,T] lSeqsigma[G];
+  real l_st_priorsd;
+  real l_ribo_priorsd;
+  real l_ribo_priornu;
+  real l_pihalf_priormu;
+  real l_pihalf_priorsd;
+}
+
+parameters {
+  vector<lower=-10,upper=10>[G] l_st; // the ratio of steady state ratio to ribo
+  matrix<lower=-10,upper=10>[G,T] lribo;  // log vector of ribo-seq levels
+  vector<lower=-20,upper=20>[G] l_pihalf;  //log half life
+  vector[G] prot0; // initial LOG amount of protein
+}
+
+transformed parameters{
+    matrix [G,T] prot; // amounts of protein
+    vector[G] Kd; // the degred
+    vector[G] lKd; // the log degrad
+    vector[G] lKs; // the (log) synthesis constant
+    //get Kd
+    lKd = log(log(2)) -  l_pihalf;
+  
+    //get Ks
+    lKs = l_st -  lKd;
+  
+    prot[,1] = prot0;
+    for(i in 2:T){
+      // put thisinto wolfram  exp(  - d_0  T  )  * (P0 +   Integrate [  ( s_0 + (s_1 - s_0) t)  * exp( d_0 (t) )  dt , from 0 to T ] )
+      //this is correct, but stans functions don't wory this way, we need to accumulate
+     // prot[,i] = logSumMinus(
+      //    log_sum_exp(prot[,i-1] - exp(lKd)  ,  lribo[,i-1] -2 *lKd  ,  lribo[,i]-lKd  ,-exp(lKd)+lribo[,i]-2*lKd ),
+     //     log_sum_exp(lribo[,i]-2*lKd , -exp(lKd)+lribo[,i-1]-lKd , -exp(lKd)+lribo[,i-1]-2*lKd)
+     // )
+      prot[,i] = prot[,i-1] - exp(lKd);//1
+      prot[,i] = log_sum_exp(prot[,i],lKs+ lribo[,i]-lKd);//5
+      prot[,i] = log_sum_exp(prot[,i],lKs+-exp(lKd)+lribo[,i]-2*lKd );//6
+    
+      prot[,i] = log_sum_exp(prot[,i],lKs+lribo[,i-1]-lKd);//7
+      prot[,i] = log_sum_exp(prot[,i],lKs+lribo[,i-1] -2 *lKd );//8
+      prot[,i] = log_minus_exp(prot[,i],lKs+lribo[,i]-2*lKd );//9
+      prot[,i] = log_minus_exp(prot[,i],lKs-exp(lKd)+lribo[,i-1] - lKd );//2
+      prot[,i] = log_minus_exp(prot[,i],lKs+lribo[,i-1] - lKd );//3
+      prot[,i] = log_minus_exp(prot[,i],lKs+-exp(lKd)+lribo[,i-1] - 2*lKd );//4
+
+    }
+}
+
+model {
+  // this needs to become steady state I think
+  // for(c in 1:ncond){
+    // l_st[,c] ~ normal(mu0, sqrt(sigma20));
+
+  l_st ~ normal(0,l_st_priorsd);
+  l_pihalf ~ normal(l_pihalf_priormu,l_pihalf_priorsd);
+  
+  //for(t in 1:T){
+  //  lribo[,t] ~ student_t(l_ribo_priornu,0,l_ribo_priorsd);
+  //}// put a prior on fold changes
+
+  for(g in 1:G){
+  
+    lSeqmu[g] ~ multi_normal(lribo[g],lSeqsigma[g]);
+
+    lMSmu[g]  ~ multi_normal(prot[g],lMSsigma[g]);
+    
+  }
+  
+}
+
+
+
+generated quantities{
+    matrix[G,T] lMSdev;
+    lMSdev = prot - lMSmu;
+}
+
+```
+
+
+```{r}
+sampdata <- here('data/sampdata.rds')%>%read_rds
+ribo <- c(10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 100, 100, 30, 
+30, 30, 30, 30, 30, 30, 30, 30, 30)
+nT = length(ribo)
+stopifnot(length(Pe) == length(ribo))
+
+
+sampdata$T=nT
+sampdata$lMSmu = t(log(P)) #- median(log(P))
+sampdata$lSeqmu = t(log(ribo)) #- median(log(ribo))
+sampdata$lMSsigma = array(diag(rep(0.1,nT)),c(1,nT,nT))
+sampdata$lSeqsigma = array(diag(rep(0.1,nT)),c(1,nT,nT))
+
+time = 1:length(ribo)
+timeknots <- time[c(-1,-length(time))]
+sampdata$mybs =  cbind(1,ibs(time, knots = timeknots,degree = 1, intercept = TRUE))
+sampdata$mydbs =bs(time, knots = timeknots,degree = 1, intercept = TRUE)
+
+initvals=list()
+initvals$prot0 <- array(sampdata$lMSmu[1],1)
+Kd = d_0
+lKd = log(Kd)
+lpihalf = log(log(2)) - lKd
+pihalf = log(2) / Kd
+lpihalf = log(log(2)) - lKd
+log(log(2)) - lpihalf
+lKd
+#log(log(2)) - lKd
+
+initvals$l_pihalf <- array(lpihalf,1)
+initvals$lribo = sampdata$lSeqmu
+initvals$l_st = array(log(Ks) - lKd,1)
+
+sampdata[names(sampdata)%>%str_subset('sd$')] %<>% map(multiply_by,10)
+# 
+# sampdata%>%map(dim)
+# sampdata
+# proDAsigmastan2
+
+exp(opt$par$lKs)
+exp(opt$par$l_st)
+
+
+opt <- optimizing(proDAsigmastan2,data=sampdata,verbose=T,init=function(){initvals},as_vector=F,iter=1,save_iterations=TRUE)
+
+#these aren't equal
+
+initvals$l_pihalf;lpihalf
+opt$par$l_pihalf;lpihalf
+opt$theta_tilde[1,'l_pihalf[1]'];lpihalf
+
+initvals$l_st;opt$par$l_st;opt$theta_tilde[1,'l_st[1]']
+
+
+exp(opt$par$prot0)
+exp(opt$par$prot[1,])
+
+
+
+#Now let' 
+
+
+log(log(2)) - opt$par$l_pihalf
+opt$par$lKd
+
+ggpubr::ggarrange(plotlist=list(
+  qplot(y=Pe,x=seq_along(Pe),geom='point'),
+  qplot(y=exp(opt$par$prot[1,]),x=seq_along(Pe),geom='point')
+))
+
+(Ks*ribo) / (last(Pe)*Kd)
+
+#Ks is tooo high.
+
+exp(opt$par$lKs)*exp(last(opt$par$lribo))
+exp(opt$par$lKd)*exp(last(opt$par$prot))
+
+#Thi sis a function of st and lKd
+exp(opt$par$lKd)
+
+
+
+```
+
+
+THis is kiiiind of working.
+
+So what if I optimize on the old params, since the above strategy of evaluating wth 1 iter isn't really working
+```{r}
+
+opt <- optimizing(proDAsigmastan2,data=sampdata,verbose=T,init=function(){initvals},as_vector=F,iter=1000,save_iterations=TRUE)
+
+ggpubr::ggarrange(ncol=2,plotlist=list(
+  qplot(y=Pe,x=seq_along(Pe),geom='point'),
+  qplot(y=exp(opt$par$prot[1,]),x=seq_along(Pe),geom='point')
+))
+
+```
+
+
+
+Victory!!!!
+
+
+
+
+
+
+
 

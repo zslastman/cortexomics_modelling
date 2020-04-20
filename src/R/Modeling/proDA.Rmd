@@ -122,6 +122,8 @@ proDA::coefficient_variance_matrices(fit)%>%head(1)
 
 ## Modeling with proDAs sigmas
 
+Lots of ways we could do this. Simplest option is a kind of ugly kludge - we put the actua lMSmus on the left of our sampling statement, the sigmas on the right, and the trajectory as the mean of mutlivariate. That way we aren't sampling a transformed parameter and don't have to worry about the jacobian adjustment.
+
 ```{stan, output.var = 'proDAsigmastan'}
 data {
   int nsamples;// number of samples
@@ -190,284 +192,168 @@ model {
 
   for(g in 1:G){
   
-    seq[g,] ~ multi_normal(lSeqmu[g,],lSeqsigma[g]);
+    lSeqmu[g] ~ multi_normal(seq[g,],lSeqsigma[g]);
 
-    prot[g,] ~ multi_normal(lMSmu[g,],lMSsigma[g]);
+    lMSmu[g]  ~ multi_normal(prot[g,],lMSsigma[g]);
     
   }
   
 }
 
-```
-
-So the above model has the major problem that it's sampling a transformed parameter, reversing this is kind of a nightmare.
-
-HOWEVER this only a problem for transformed variables, not for optimizing.
-
-Supposing I first determine the course, then use lMSu to determine the deviation. Then I set a prior of zero on the deviations, so the model tries to minimize them.
-
-
-
-## Modeling with proDAs sigmas
-
-```{stan, output.var = 'proDAsigmastan'}
-data {
-  int G;// number of proteins
-  int T;// info on the number of conditions
-  matrix[G,T] lMSmu;
-  matrix[G,T] lSeqmu;
-  matrix[T,T] lMSsigma[G];
-  matrix[T ,T] lSeqsigma[G];
-  matrix[T ,T+1] mybs; // spline basis for the protein trajectory
-  matrix[T,T] mydbs; // differentiated spline basis for the RNA (piecewise linear right now)
-  real l_st_priorsd;
-  real l_ribo_priorsd;
-  real l_ribo_priornu;
-  real l_pihalf_priormu;
-  real l_pihalf_priorsd;
-}
-
-parameters {
-  vector<lower=-10,upper=10>[G] l_st; // the ratio of steady state ratio to ribo
-  matrix<lower=-10,upper=10>[G,T] lsynths;  // log vector of fold changes due to synthesis
-  vector<lower=-20,upper=20>[G] l_pihalf;  //log half life
-  vector[G] prot0; // initial LOG amount of protein
-}
-
-transformed parameters{
-    matrix [G,T] prot; // amounts of protein
-    matrix [G,T] seq; // amounts of mRNA
-    vector[G] Kd; // the degred
-    vector[G] lKd; // the log degrad
-    vector[G] lKs; // the (log) synthesis constant
-    matrix [G,T] synth; // vector of fold changes due to synthesis
-    matrix [G,T] fcs; // vector of fold changes due to synthesis
-
-    //get Kd
-    lKd = log2(log(2)) -  l_pihalf;
-    Kd = exp(log(2)*lKd);
-    
-    //get Ks
-    lKs = l_st - lKd;
-
-    //get the fold changes due to synthesis (which must be positive)
-    synth = exp(log(2)*lsynths);
-    
-    fcs = synth - rep_matrix( Kd,T);
-    
-    prot = append_col(prot0, fcs ) * (mybs)'; // get the full protein trajectory
-
-    seq = prot + log2(synth * (mydbs)' ) - rep_matrix(lKs,T); // get the mRNA trajectory this implies
-    
-    
-}
-
-model {
-  // this needs to become steady state I think
-  // for(c in 1:ncond){
-    // l_st[,c] ~ normal(mu0, sqrt(sigma20));
-
-  l_st ~ normal(0,l_st_priorsd);
-  l_pihalf ~ normal(l_pihalf_priormu,l_pihalf_priorsd);
-  
-  #for(t in 1:T){
-  #  lsynths[,t] ~ student_t(l_ribo_priornu,0,l_ribo_priorsd);
-  #}// put a prior on fold changes
-
-  for(g in 1:G){
-  
-    prot[g,] ~ multi_normal(lMSmu[g,],lMSsigma[g]);
-    #So prot is linear in prot0 exp (2) in Kd - ask wolfram alpha
-    #log(abs( { differentiate  - 2^k } ))  gives us k* log (2) log+log(log(2)))
-    target += l_pihalf * log (2); #leave out constant term, 
-    target += lsynths * log (2); #leave out constant term, 
-    #
-      
-    #so then seq gets all the same jacobian corrections, nothing for lKS (linear)
-    seq[g,] ~ multi_normal(lSeqmu[g,],lSeqsigma[g]);
-    target += l_pihalf * log (2); #leave out constant term, 
-    target += lsynths * log (2); #leave out constant term, 
-    #And nothing for the original log term:  log(abs( { differentiate log2( 2^(s) * b } )) 
-    
-  }
-  
-}
 
 generated quantities{
     matrix[G,T] lMSdev;
     lMSdev = prot - lMSmu;
 }
+
 ```
 
+BUT this is still our log-space stepwise parametrization.
+We might like to assume linear change instead....
 
-So with a little wolfram alpha, this turns out to be okay, since most of the parameter transformations are linear.
+## Linear change model
 
-This is still the exponential parametrization. The linear one is much, much harder.
+Cast your eyes to linear_degsynth.Rmd
+This puppy gets us linear change when our parameters are in log space.
+lP_1 = logSumMinus(
+    logSumExp(c(lP_0 - exp(dl)  ,  ls_0 -2 *dl  ,  ls_1-dl  ,-exp(dl)+ls_1-2*dl )),
+    logSumExp(c(ls_1-2*dl , -exp(dl)+ls_0-dl , -exp(dl)+ls_0-2*dl))
+  )
 
-
-
-
-
-
+So let's try this in stan
 
 ```{r}
 
-Kd = 3
-synths = c(3,3,10,0.1,0.1)
-prot0 = 10
-lKs = 0
+proda_stepwise_model <- 
 
-prot =  mybs %*% c(prot0,synths - Kd)
-ribo = prot + log2(sampdata$mydbs %*% c(synths)) - lKs
+gdata = list(
+  G=1,
+  T=length(ribo),
+  lMSmu = fit$coeffff,
+  lSeqmu = fi$coefffffff,
+  lMSsigma = coefficient_variance_matrices(fit)[gind],
+  lSeqsigma = coefficient_variance_matrices(fit)[gind],
+)
 
+# gdata = c(gdata,priors)
+gdata = c(gdata,widepriors)
 
-# 
-# sampdata$lMS[] = rep(prot,each=3)+rnorm(15,sd=0.01)
-# sampdata$lribo[] = rep(ribo,each=2)+rnorm(10,sd=0.01)
-time = 1:5
-timeknots <- time[c(-1,-length(time))]
-mybs <- cbind(1,ibs(time, knots = timeknots,degree = 1, intercept = TRUE))
-mydbs = bs(time, knots = timeknots,degree = 1, intercept = TRUE)
+initvals=list()
+ginits$prot0 <- array(gdata$lMSmu[1],1)
+ginits$l_pihalf <- array(log(0.25),1)
+ginits$lribo = gdata$lSeqmu
+ginits$l_st = ginits$prot0 - first(ginits$lribo)
 
+#optimize the model using our proDA data
+gopt <- optimizing(proda_stepwise_model, data = gdata, init = ginits )
 
-
-          
-prot + log2(mydbs %*% (synths)) - lKs
-
-prot + log2(mydbs %*% (fcs + Kd)) - lKs
-
-fcs <-function(prot) solve(mybs[,-1])(mydbs %*% prot - prot[1])
-  
-proDAsigmastan
-
-sampdata$lMSmu = t(prot)
-sampdata$lSeqmu = t(ribo)
-sampdata$lMSsigma = array(diag(rep(0.1,5)),c(1,5,5))
-sampdata$lSeqsigma = array(diag(rep(0.1,5)),c(1,5,5))
-
-
-optimizing(proDAsigmastan,data=sampdata)
-
+gopt
 
 ```
 
-### Trying to ssample prot and seq transformed variables witht he MVnormss from prodDA - hopless
+So the above gets us the maximum likelihood kinetic trajectory through our data.
 
-```{stan, output.var = 'proDAsigmastan'}
-data {
-  int G;// number of proteins
-  int T;// info on the number of conditions
-  matrix[G,T] lMSmu;
-  matrix[G,T] lSeqmu;
-  matrix[G,T] lMSsigma[T];
-  matrix[G ,T] lSeqsigma[T];
-  matrix[T ,T+1] mybs; // spline basis for the protein trajectory
-  matrix[T,T] mydbs; // differentiated spline basis for the RNA (piecewise linear right now)
-  real l_st_priorsd;
-  real l_ribo_priorsd;
-  real l_ribo_priornu;
-  real l_pihalf_priormu;
-  real l_pihalf_priorsd;
-}
+From these fits we can extract the 'MSdeviances' and the lKs and lKd (or the l_st and l_pihalf) parameters.
 
-parameters {
-  vector<lower=-10,upper=10>[G] l_st; // the ratio of steady state ratio to ribo
-  matrix<lower=-10,upper=10>[G,T] lsynths;  // log vector of fold changes due to synthesis
-  vector<lower=-20,upper=20>[G] l_pihalf;  //log half life
-  vector[G] prot0; // initial LOG amount of protein
-}
+We get these in the form of data frames containing a mean and sd. For use in clustering.
 
-transformed parameters{
-    matrix [G,T] prot; // amounts of protein
-    matrix [G,T] seq; // amounts of mRNA
-    vector[G] Kd; // the degred
-    vector[G] lKd; // the log degrad
-    vector[G] lKs; // the (log) synthesis constant
-    matrix [G,T] synth; // vector of fold changes due to synthesis
-    matrix [G,T] fcs; // vector of fold changes due to synthesis
+Then, finally, armed with our list of data + uncertainty matrices, we can cluster
 
-    //get Kd
-    lKd = log2(log(2)) -  l_pihalf;
-    Kd = exp(log(2)*lKd);
-    
-    //get Ks
-    lKs = l_st -  lKd;
+We want to do some heatmaps, and display TE status, number of drop outs etc next to the heatmaps
 
-    //get the fold changes due to synthesis (which must be positive)
-    synth = exp(log(2)*lsynths);
-    
-    fcs = synth - rep_matrix( Kd,T);
-    
-    prot = append_col(prot0, fcs ) * (mybs)'; // get the full protein trajectory
+We'll also want to look at the variance explained by the clusters.
 
-    seq = prot + log2(synth * (mydbs)' ) - rep_matrix(lKs,T); // get the mRNA trajectory this implies
-    
-    
-    protdevs = lMSmu - prot;
-  
-}
-
-model {
-  // this needs to become steady state I think
-  // for(c in 1:ncond){
-    // l_st[,c] ~ normal(mu0, sqrt(sigma20));
-
-  l_st ~ normal(0,l_st_priorsd);
-  l_pihalf ~ normal(l_pihalf_priormu,l_pihalf_priorsd);
-  
-  #for(t in 1:T){
-  #  lsynths[,t] ~ student_t(l_ribo_priornu,0,l_ribo_priorsd);
-  #}// put a prior on fold changes
-
-  for(g in 1:G){
-  
-    prot[g,] ~ multi_normal(lSeqmu[g,],lSeqsigma[g]);
-    #So prot is linear in prot0 exp (2) in Kd - ask wolfram alpha
-    #log(abs( { differentiate  - 2^k } ))  gives us k* log (2) log+log(log(2)))
-    target += l_pihalf * log (2); #leave out constant term, 
-    target += lsynths * log (2); #leave out constant term, 
-    #
-      
-    #so then seq gets all the same jacobian corrections, nothing for lKS (linear)
-    seq[g,] ~ multi_normal(lSeqmu[g,],lSeqsigma[g]);
-    target += l_pihalf * log (2); #leave out constant term, 
-    target += lsynths * log (2); #leave out constant term, 
-    #And nothing for the original log term:  log(abs( { differentiate log2( 2^(s) * b } )) 
-  }
-  
-}
-
-```
+And display the different go terms per cluster.
 
 
 
-But can I just optimize, even without the jacobian thing
 
-```{stan, output.var = 'testopt'}
-data {
-  vector[10] n;
-}
+<!-- ### Trying to ssample prot and seq transformed variables witht he MVnormss from prodDA - hopless -->
 
-parameters{
-  real invmu;
-}
+<!-- ```{stan, output.var = 'proDAsigmastan'} -->
+<!-- data { -->
+<!--   int G;// number of proteins -->
+<!--   int T;// info on the number of conditions -->
+<!--   matrix[G,T] lMSmu; -->
+<!--   matrix[G,T] lSeqmu; -->
+<!--   matrix[G,T] lMSsigma[T]; -->
+<!--   matrix[G ,T] lSeqsigma[T]; -->
+<!--   matrix[T ,T+1] mybs; // spline basis for the protein trajectory -->
+<!--   matrix[T,T] mydbs; // differentiated spline basis for the RNA (piecewise linear right now) -->
+<!--   real l_st_priorsd; -->
+<!--   real l_ribo_priorsd; -->
+<!--   real l_ribo_priornu; -->
+<!--   real l_pihalf_priormu; -->
+<!--   real l_pihalf_priorsd; -->
+<!-- } -->
 
-transformed parameters{
-  real mu;
-  mu = 1/invmu;
-}
+<!-- parameters { -->
+<!--   vector<lower=-10,upper=10>[G] l_st; // the ratio of steady state ratio to ribo -->
+<!--   matrix<lower=-10,upper=10>[G,T] lsynths;  // log vector of fold changes due to synthesis -->
+<!--   vector<lower=-20,upper=20>[G] l_pihalf;  //log half life -->
+<!--   vector[G] prot0; // initial LOG amount of protein -->
+<!-- } -->
 
-model{
-  n ~ normal(mu,1);
-}
-```
+<!-- transformed parameters{ -->
+<!--     matrix [G,T] prot; // amounts of protein -->
+<!--     matrix [G,T] seq; // amounts of mRNA -->
+<!--     vector[G] Kd; // the degred -->
+<!--     vector[G] lKd; // the log degrad -->
+<!--     vector[G] lKs; // the (log) synthesis constant -->
+<!--     matrix [G,T] synth; // vector of fold changes due to synthesis -->
+<!--     matrix [G,T] fcs; // vector of fold changes due to synthesis -->
 
-```{r}
+<!--     //get Kd -->
+<!--     lKd = log2(log(2)) -  l_pihalf; -->
+<!--     Kd = exp(log(2)*lKd); -->
 
-optimizing(testopt,data=list(n=rep(10,10)))
+<!--     //get Ks -->
+<!--     lKs = l_st -  lKd; -->
 
-```
+<!--     //get the fold changes due to synthesis (which must be positive) -->
+<!--     synth = exp(log(2)*lsynths); -->
+
+<!--     fcs = synth - rep_matrix( Kd,T); -->
+
+<!--     prot = append_col(prot0, fcs ) * (mybs)'; // get the full protein trajectory -->
+
+<!--     seq = prot + log2(synth * (mydbs)' ) - rep_matrix(lKs,T); // get the mRNA trajectory this implies -->
 
 
+<!--     protdevs = lMSmu - prot; -->
+
+<!-- } -->
+
+<!-- model { -->
+<!--   // this needs to become steady state I think -->
+<!--   // for(c in 1:ncond){ -->
+<!--     // l_st[,c] ~ normal(mu0, sqrt(sigma20)); -->
+
+<!--   l_st ~ normal(0,l_st_priorsd); -->
+<!--   l_pihalf ~ normal(l_pihalf_priormu,l_pihalf_priorsd); -->
+
+<!--   #for(t in 1:T){ -->
+<!--   #  lsynths[,t] ~ student_t(l_ribo_priornu,0,l_ribo_priorsd); -->
+<!--   #}// put a prior on fold changes -->
+
+<!--   for(g in 1:G){ -->
+
+<!--     prot[g,] ~ multi_normal(lSeqmu[g,],lSeqsigma[g]); -->
+<!--     #So prot is linear in prot0 exp (2) in Kd - ask wolfram alpha -->
+<!--     #log(abs( { differentiate  - 2^k } ))  gives us k* log (2) log+log(log(2))) -->
+<!--     target += l_pihalf * log (2); #leave out constant term,  -->
+<!--     target += lsynths * log (2); #leave out constant term,  -->
+<!--     # -->
+
+<!--     #so then seq gets all the same jacobian corrections, nothing for lKS (linear) -->
+<!--     seq[g,] ~ multi_normal(lSeqmu[g,],lSeqsigma[g]); -->
+<!--     target += l_pihalf * log (2); #leave out constant term,  -->
+<!--     target += lsynths * log (2); #leave out constant term,  -->
+<!--     #And nothing for the original log term:  log(abs( { differentiate log2( 2^(s) * b } ))  -->
+<!--   } -->
+
+<!-- } -->
+
+<!-- ``` -->
 
 
