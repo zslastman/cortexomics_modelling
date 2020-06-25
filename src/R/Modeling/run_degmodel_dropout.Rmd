@@ -6,6 +6,8 @@ output:
 
 ---
 
+
+
 This notebook shows the currnet state of the analysis of protein synthesis trajectories in mouse neocortex, using data from
 Ribo-seq and Mass Spectrometry.
 
@@ -19,7 +21,6 @@ knitr::opts_chunk$set(echo=T,cache=F,root.dir='/fast/groups/ag_ohler/work/dharne
 library(rmarkdown)
 library(knitr)
 library(here)
-#for convenience on my sistem
 # try(silent = T,{setwd('/fast/groups/ag_ohler/work/dharnet_m/cortexomics_modeling/')})
 #for excecuting in the terminal
 try(silent = T,{library(colorout)})
@@ -80,22 +81,22 @@ best_uprotein_ids <- uids4stan
 
 #This code is here for convencience, shows how the objects were created
 
-# c(matched_ms_mat,mscountvoom$E) %<-% with(new.env(),
-# load('data/integrate_exprdata2.Rdata')
-# list(matched_ms_mat,mscountvoom$E)	
-# })
-# ribomat <- mscountvoom$E%>%.[,str_subset(colnames(.),'ribo')]
-# ribomat %>% saveRDS('data/ribomat.rds')
-# matchedms_mat %>% saveRDS('data/matchedms_mat.rds')
-# ribo_sigma <- countvoom$weights%>%{1/.}%>%
-#   set_rownames(rownames(countvoom$E))%>%
-#   set_colnames(colnames(countvoom$E))%>%
-#   .[best_protein_ids,str_subset(colnames(.),'ribo'),drop=F]%>%
-#   set_rownames(best_uprotein_ids)
-# ribo_sigma %>% saveRDS('data/ribo_sigma.rds')
-# matchedms_mat %>%saveRDS('data/matched_ms_mat.rds')
-# ribomat %>%saveRDS('data/ribomat.rds')
-# matchedms_mat%>%colMedians(na.rm=T)%>%txtplot
+c(matched_ms_mat,mscountvoom$E) %<-% with(new.env(),{
+load(here('../cortexomics/data/integrate_exprdata2.Rdata'))
+list(matched_ms_mat,mscountvoom$E)	
+})
+ribomat <- mscountvoom$E%>%.[,str_subset(colnames(.),'ribo')]
+ribomat %>% saveRDS('data/ribomat.rds')
+matchedms_mat %>% saveRDS('data/matchedms_mat.rds')
+ribo_sigma <- countvoom$weights%>%{1/.}%>%
+  set_rownames(rownames(countvoom$E))%>%
+  set_colnames(colnames(countvoom$E))%>%
+  .[best_protein_ids,str_subset(colnames(.),'ribo'),drop=F]%>%
+  set_rownames(best_uprotein_ids)
+ribo_sigma %>% saveRDS('data/ribo_sigma.rds')
+matchedms_mat %>%saveRDS('data/matched_ms_mat.rds')
+ribomat %>%saveRDS('data/ribomat.rds')
+matchedms_mat%>%colMedians(na.rm=T)%>%txtplot
 
 #this is the ms data
 matchedms_mat <- (readRDS)(here('data/matched_ms_mat.rds'))
@@ -666,7 +667,7 @@ calculate the hessian exactly.
 #Random initializations don't work well, so we'lll 
 satb2fits<-replicate(simplify=F,5,{
 	pre = Sys.time()
-	optres<-safely(rstan::optimizing)(dp_model,data=get_dp_standata_withpriors('ENSMUSP00000110057_4528'),algorithm='Newton',as_vector=FALSE,hessian=TRUE)
+	optres<-safely(rstan::optimizing)(dp_model,data=get_dp_standata_withpriors('ENSMUSP00000110057_4528',ribomatrscl=rnamatrscl,rna_sigma),algorithm='Newton',as_vector=FALSE,hessian=TRUE)
 	Sys.time() - pre
 	optres
 })

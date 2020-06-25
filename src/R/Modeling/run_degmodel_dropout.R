@@ -287,29 +287,33 @@ if(!file.exists('data/geneoptfits.rds')){
 }else{
   genefits<- readRDS((file='data/geneoptfits.rds'))
 }
-genefits%>%length
-#see how many crashed for each gene
-genefits%>%map_dbl(.%>%map('result')%>%map_lgl(is.null)%>%sum)%>%table
-#None.
-genefitsres<- genefits%>%map(.%>%map('result'))
-genefitsres%<>%setNames(uids4stan)
 
-#see how many converge
-convnums <- genefitsres%>%map_dbl(.%>%map_dbl('return_code')%>%`==`(0)%>%sum)
-genefitsres <- genefitsres[which(convnums!=0)]
-conv_uprotids <- genefitsres%>%names
-stopifnot(all(convnums==5))
+get_bestfitinits<-function(genefits){
+  #see how many crashed for each gene
+  genefits%>%map_dbl(.%>%map('result')%>%map_lgl(is.null)%>%sum)%>%table
+  #None.
+  genefitsres<- genefits%>%map(.%>%map('result'))
+  genefitsres%<>%setNames(uids4stan)
 
-#get the best fit object for each gene
-bestfits <- lapply(genefitsres,function(selgenefits){
-  bestfit<-selgenefits%>%map_dbl('value')%>%which.max
-  selgenefits[[bestfit]]
-})
-#and optimized parameters
-bestfitinits <- bestfits%>%map('par')
-#name these
-bestfits%<>%setNames(conv_uprotids)
-bestfitinits%<>%setNames(conv_uprotids)
+  #see how many converge
+  convnums <- genefitsres%>%map_dbl(.%>%map_dbl('return_code')%>%`==`(0)%>%sum)
+  genefitsres <- genefitsres[which(convnums!=0)]
+  conv_uprotids <- genefitsres%>%names
+  stopifnot(all(convnums==5))
+
+  #get the best fit object for each gene
+  bestfits <- lapply(genefitsres,function(selgenefits){
+    bestfit<-selgenefits%>%map_dbl('value')%>%which.max
+    selgenefits[[bestfit]]
+  })
+  #and optimized parameters
+  bestfitinits <- bestfits%>%map('par')
+  #name these
+  bestfits%<>%setNames(conv_uprotids)
+  bestfitinits%<>%setNames(conv_uprotids)
+  bestfitinits
+}
+
 
 diag(solve(-genefitsres[[1]][[1]]$hessian))
 
@@ -342,6 +346,7 @@ get_comb_initvals <- function(bestfitinits){
   combinitvals	
 }
 combinitvals <- get_comb_initvals(bestfitinits)
+
 
 #Now what if we try to fit normalization factors for each timepoint, fitting over all
 #genes at once?
