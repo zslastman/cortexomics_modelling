@@ -1,4 +1,7 @@
 base::source(here::here('src/R/Rprofile.R'))
+if(!exists("cdsgrl")) {
+  base::source("/fast/work/groups/ag_ohler/dharnet_m/cortexomics/src/Figures/Figure0/0_load_annotation.R")
+}
 
 #rmarkdown::render(here('src/R/Modeling/run_degmodel_dropout.Rmd'))
 dp_stanfile = here('src/Stan/mod_proDD.stan')%T>%{stopifnot(file.exists(.))}
@@ -11,21 +14,25 @@ library(splines)
 library(purrr)
 library(magrittr)
 library(here)
-library(splines2)
+
+
+# sel_prodpreds<-readRDS('data/sel_prodpreds.rds')
+sel_ms_mat<-readRDS('data/sel_ms_mat.rds')
+# countpred_df<-readRDS('data/countpred_df.rds')
+tx_countdata<-readRDS('data/tx_countdata.rds')
+
+
+exprdf$gene_name = gid2gnm[[exprdf$gene_id]]
 
 ################################################################################
 ########Functions to serve data to stan
 ################################################################################
 #load the metadata on all our genes and the many IDs involved
-metainfo<-suppressMessages({read_tsv(here('data/metainfo.tsv'))})
+metainfo<-read_tsv(('tables/ms_metadf.tsv'))
 #Pull out the gene names we want to analyze
 uids4stan <- metainfo%>%
-  filter(isbest)%>%#these are thee final pairs of gene/cds/mass spec ids that we use for modeling MS
-#  filter(sig_MS_change)%>%
   filter(n_stagemissing<=2)%>%#now filter them further - those with too many missing values will crash Rstan
-  .$uprotein_id
-
-gnm2uid<-metainfo%>%filter(uprotein_id %in% uids4stan)%>%distinct(gene_name,uprotein_id)%>%{safe_hashmap(.[[1]],.[[2]])}
+  .$gene_name
 
 
 
@@ -109,16 +116,6 @@ get_dp_standata <- function(sel_uprotein_id,
   invisible(standata)
 }
 
-matchedms_mat <- (readRDS)(here('data/matched_ms_mat.rds'))
-mscountvoom <- (readRDS)(here('data/mscountvoom.rds'))
-
-# c(mscountvoom$E) %<-% with(new.env(),{
-# 	load('data/integrate_exprdata2.Rdata')
-# 	list(mscountvoom$E)	
-# })
-
-#The below seems to be rna specific but isn't actually
-#file.copy('../cortexomics/data/rnaproddparams.Rdata',here('data/proddparams.rda'))
 if(!file.exists(here('data/proddparams.rda'))){
   library(proDD)
   #get matrices of rnaseq and ms data, median norm them, then subtract again so the values center on zero
