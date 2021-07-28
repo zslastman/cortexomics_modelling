@@ -34,8 +34,6 @@ uids4stan <- metainfo%>%
   filter(n_stagemissing<=2)%>%#now filter them further - those with too many missing values will crash Rstan
   .$gene_name
 
-
-
 get_count_mat_sigma <- function(uids4stan,countvoom,isribo=F){
 	assaystring = if(isribo)'ribo' else 'total'
 
@@ -58,7 +56,7 @@ scale_countmat <- function(uids4stan,rnamat){
 	rnamed <- rnamatrscl%>%apply(2,median,na.rm=T)%>%median(.,na.rm=T)
 	rnamatrscl %<>% subtract(rnamed)%>%set_rownames(uids4stan)
 
-}
+}s
 
 #function that pulls out the stan data we need in the right shape, and pairs it with proDD parameters etc. 
 get_dp_standata <- function(sel_uprotein_id,
